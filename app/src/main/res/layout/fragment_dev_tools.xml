@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context="com.example.sampleviewer.DevToolsFragment">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Developer Tools"
+            android:textAppearance="?attr/textAppearanceHeadline5"
+            android:layout_marginBottom="16dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Database Actions (Use with caution!)"
+            android:textAppearance="?attr/textAppearanceTitleMedium"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_clear_users"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Clear Users Table"
+            android:textColor="@android:color/holo_red_dark"
+            app:strokeColor="@android:color/holo_red_dark"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_clear_detections"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="Clear Detections Table"
+            android:textColor="@android:color/holo_red_dark"
+            app:strokeColor="@android:color/holo_red_dark" />
+
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="View Data"
+            android:textAppearance="?attr/textAppearanceTitleMedium"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_view_users"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="View Registered Users"
+            android:layout_marginBottom="8dp"/>
+
+        <TextView
+            android:id="@+id/textview_dev_output"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@color/purple_200"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:textAppearance="?attr/textAppearanceBody2"
+            android:textIsSelectable="true"
+            tools:text="Output will appear here...\nUser 1: test@example.com\nUser 2: another@test.com" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_add_fake_detections"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Add Fake Detection Data"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_call_test_notification"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Call Test Notification"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_get_image"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Test Get Image"
+            android:layout_marginBottom="8dp"/>
+    </LinearLayout>
+</ScrollView>
