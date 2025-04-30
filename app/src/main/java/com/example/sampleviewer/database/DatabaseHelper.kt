@@ -7,6 +7,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.example.myapplication.R
 import com.example.sampleviewer.Event
 import java.security.MessageDigest
 
@@ -14,7 +15,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "users.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2 //
+
 
         // Existing user table constants
         private const val TABLE_USERS = "users"
@@ -22,27 +24,29 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         private const val COLUMN_EMAIL = "email"
         private const val COLUMN_PASSWORD = "password"
 
-        // New detections table constants
+        // Detections table constants (CHANGED)
         private const val TABLE_DETECTIONS = "detections"
-        private const val COLUMN_DETECTION_ID = "id"
+        // *** Use Event UUID as Primary Key ***
+        private const val COLUMN_EVENT_UUID = "event_uuid" // TEXT PRIMARY KEY
         private const val COLUMN_DETECTED_ANIMAL = "detected_animal"
-        private const val COLUMN_TIMESTAMP = "timestamp"
-        private const val COLUMN_CAMERA = "camera"
-        private const val COLUMN_IMAGE_PATH = "image_path"
+        private const val COLUMN_TIMESTAMP = "timestamp" // Store raw string from ESP32 (e.g., seconds or millis)
+        private const val COLUMN_CAMERA = "camera" // e.g., "Node 1"
+        private const val COLUMN_IMAGE_PATH = "image_path" // TEXT, Nullable
     }
 
     override fun onCreate(db: SQLiteDatabase) {
         val createUserTable = "CREATE TABLE $TABLE_USERS ($COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT, $COLUMN_EMAIL TEXT UNIQUE, $COLUMN_PASSWORD TEXT)"
         db.execSQL(createUserTable)
 
-        // Create detections table
+        // *** Create detections table with UUID as TEXT PRIMARY KEY ***
         val createDetectionsTable = "CREATE TABLE $TABLE_DETECTIONS (" +
-                "$COLUMN_DETECTION_ID INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "$COLUMN_EVENT_UUID TEXT PRIMARY KEY, " + // Changed
                 "$COLUMN_DETECTED_ANIMAL TEXT, " +
                 "$COLUMN_TIMESTAMP TEXT, " +
                 "$COLUMN_CAMERA TEXT, " +
-                "$COLUMN_IMAGE_PATH TEXT)"
+                "$COLUMN_IMAGE_PATH TEXT)" // Nullable
         db.execSQL(createDetectionsTable)
+        Log.i("DatabaseHelper", "Detections table created with UUID as PK.")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -83,66 +87,103 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return isValid
     }
 
-    // Insert a detection record into the detections table.
-    // The record contains the detected animal, timestamp, camera, and image path.
-    fun insertDetectionRecord(animal: String, timestamp: String, camera: String, imagePath: String): Boolean {
-        val db = writableDatabase // Get instance from helper
-        val values = ContentValues().apply {
-            put(COLUMN_DETECTED_ANIMAL, animal)
-            put(COLUMN_TIMESTAMP, timestamp) // Storing as String (TEXT)
-            put(COLUMN_CAMERA, camera)
-            put(COLUMN_IMAGE_PATH, imagePath)
+    /**
+     * Inserts a detection record using the Event UUID as the primary key.
+     * Replaces existing record on conflict.
+     */
+    fun insertDetectionRecord(eventUUID: String, animal: String, timestamp: String, camera: String, imagePath: String?): Boolean {
+        if (eventUUID.isBlank()) {
+            Log.e("DatabaseHelper", "Attempted to insert detection record with blank UUID.")
+            return false
         }
-        val result = try {
-            db.insert(TABLE_DETECTIONS, null, values)
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_EVENT_UUID, eventUUID) // Use UUID as key
+            put(COLUMN_DETECTED_ANIMAL, animal)
+            put(COLUMN_TIMESTAMP, timestamp)
+            put(COLUMN_CAMERA, camera)
+            put(COLUMN_IMAGE_PATH, imagePath) // Can be null initially
+        }
+        var result = -1L
+        try {
+            // Use CONFLICT_REPLACE: if a record with this UUID already exists (e.g., alert arrived again),
+            // update it. If you only want to insert if new, use CONFLICT_IGNORE or check first.
+            result = db.insertWithOnConflict(TABLE_DETECTIONS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
         } catch (e: Exception) {
-            Log.e("DatabaseHelper", "Error inserting detection record", e)
-            -1L // Indicate failure
+            Log.e("DatabaseHelper", "Error inserting/replacing detection record UUID $eventUUID", e)
         } finally {
+            // db.close() // Don't close helper instance
+        }
+        if (result == -1L) {
+            Log.e("DatabaseHelper", "Failed to insert/replace detection record for UUID $eventUUID")
+        } else {
+            Log.d("DatabaseHelper", "Successfully inserted/replaced detection record UUID: $eventUUID (Result ID: $result)")
         }
         return result != -1L
     }
 
+    /**
+     * Updates the image_path for a specific detection record identified by its event UUID.
+     * Returns the number of rows affected (should be 0 or 1).
+     */
+    fun updateImagePathForEvent(eventUUID: String, imagePath: String?): Int {
+        if (eventUUID.isBlank()) {
+            Log.e("DatabaseHelper", "Attempted to update image path with blank UUID.")
+            return 0
+        }
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_IMAGE_PATH, imagePath) // Set new path (or null)
+        }
+        val selection = "$COLUMN_EVENT_UUID = ?"
+        val selectionArgs = arrayOf(eventUUID)
+        var rowsAffected = 0
+        try {
+            rowsAffected = db.update(TABLE_DETECTIONS, values, selection, selectionArgs)
+            Log.d("DatabaseHelper", "Updated image path for UUID $eventUUID. Rows affected: $rowsAffected")
+        } catch (e: Exception) {
+            Log.e("DatabaseHelper", "Error updating image path for UUID $eventUUID", e)
+        } finally {
+            // db.close() // Don't close helper instance
+        }
+        return rowsAffected
+    }
 
 
-
-    @SuppressLint("Range") // Suppress lint check for getColumnIndexOrThrow
-    fun getAllDetections(): List<Event> {
+    /**
+     * Retrieves all detection events, ordered by timestamp descending.
+     */
+    @SuppressLint("Range")
+    fun getAllDetectionEvents(): List<Event> {
         val eventList = mutableListOf<Event>()
-        // Use try-with-resources for readableDatabase and cursor to ensure they are closed
-        // even if errors occur, BUT avoid closing the main helper connection.
-        // Note: Kotlin doesn't have direct try-with-resources like Java for SQLiteDatabase,
-        // so careful manual closing of the cursor in finally is still best practice.
-        // Getting the readableDatabase instance here is fine.
         val db = readableDatabase
+        // Order by timestamp - assuming it's stored as milliseconds or seconds string
+        // If stored as seconds, ensure sufficient zero-padding for correct string sort,
+        // or cast to INTEGER in query for numeric sort. Millis string usually sorts ok.
         val query = "SELECT * FROM $TABLE_DETECTIONS ORDER BY $COLUMN_TIMESTAMP DESC"
         var cursor: Cursor? = null
 
-        Log.d("DatabaseHelper", "Fetching all detection records...")
-
+        Log.d("DatabaseHelper", "Fetching all detection events...")
         try {
             cursor = db.rawQuery(query, null)
-            // Use isBeforeFirst and moveToNext for safer cursor iteration
-            if (cursor != null && cursor.moveToFirst()) { // Check cursor not null
+            if (cursor != null && cursor.moveToFirst()) {
                 do {
-                    // Extract data from cursor row
-                    val id = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_DETECTION_ID))
-                    val animal = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DETECTED_ANIMAL))
-                    val timestamp = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIMESTAMP))
-                    val camera = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CAMERA))
-                    val imagePathFromDb = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_IMAGE_PATH)) // Get the image path
+                    // *** Read UUID as the primary ID ***
+                    val eventUUID = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EVENT_UUID))
+                    val animal = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DETECTED_ANIMAL)) ?: "Unknown"
+                    val timestampStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIMESTAMP)) ?: "0"
+                    val camera = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CAMERA)) ?: "Unknown Cam"
+                    val imagePathFromDb = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_IMAGE_PATH)) // Can be null
 
-                    // Map database data to the Event data class
-                    // Consider how you want to format the timestamp for display if it's just millis string
-                    val description = "Detected: $animal ($camera)"
-                    val eventIcon = android.R.drawable.ic_menu_camera // Maybe camera icon is better?
+                    val description = "$animal by $camera"
+                    val formattedTimestamp = formatDisplayTimestamp(timestampStr) // Format for display
 
                     val event = Event(
-                        id = id.toString(),
-                        description = description, // e.g., "Detected: $animal ($camera)"
-                        timestamp = formatDisplayTimestamp(timestamp), // Format the timestamp string nicely
-                        imagePath = imagePathFromDb, // << Populate the new field
-                        fallbackIconResId = android.R.drawable.ic_menu_camera // Or your preferred default icon
+                        id = eventUUID, // Use the UUID from the DB as the Event ID
+                        description = description,
+                        timestamp = formattedTimestamp,
+                        imagePath = imagePathFromDb, // Populate from DB
+                        fallbackIconResId = R.drawable.baseline_camera_outdoor_24 // Your placeholder
                     )
                     eventList.add(event)
                 } while (cursor.moveToNext())
@@ -153,12 +194,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         } catch (e: Exception) {
             Log.e("DatabaseHelper", "Error while getting detections", e)
         } finally {
-            cursor?.close() // Ensure cursor is closed
-            // DO NOT CLOSE THE DB HERE: db.close() <--- REMOVE THIS LINE
+            cursor?.close()
+            // db.close() // Don't close helper instance
         }
         return eventList
     }
-
 
     // Optional helper function in DatabaseHelper or a separate Util class
     private fun formatDisplayTimestamp(timestampString: String): String {
@@ -228,5 +268,41 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             db.close()
         }
         return userList
+    }
+
+
+
+    // --- *** NEW: Function to get image path for a specific event *** ---
+    /**
+     * Retrieves the stored image path for a given event UUID.
+     * Returns null if the event is not found or if the path is null/empty in the DB.
+     */
+    @SuppressLint("Range")
+    fun getImagePathForEvent(eventUUID: String): String? {
+        if (eventUUID.isBlank()) return null
+
+        val db = readableDatabase
+        val query = "SELECT $COLUMN_IMAGE_PATH FROM $TABLE_DETECTIONS WHERE $COLUMN_EVENT_UUID = ?"
+        val selectionArgs = arrayOf(eventUUID)
+        var cursor: Cursor? = null
+        var imagePath: String? = null
+
+        try {
+            cursor = db.rawQuery(query, selectionArgs)
+            if (cursor != null && cursor.moveToFirst()) {
+                // Get path, check if it's null or empty in the database column
+                imagePath = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_IMAGE_PATH))
+                if (imagePath?.isBlank() == true) { // Treat blank paths as null
+                    imagePath = null
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DatabaseHelper", "Error getting image path for UUID $eventUUID", e)
+        } finally {
+            cursor?.close()
+            // db.close() // Don't close helper instance
+        }
+        Log.d("DatabaseHelper", "Image path for UUID $eventUUID: $imagePath")
+        return imagePath
     }
 }

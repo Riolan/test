@@ -31,6 +31,7 @@ class DevToolsFragment : Fragment() {
 
     private lateinit var callGetImageButton: MaterialButton // Added Button reference
 
+    private lateinit var viewDetectionsButton: MaterialButton
 
     // Coroutine scope for background tasks
     private val fragmentScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -60,6 +61,8 @@ class DevToolsFragment : Fragment() {
         addFakeDetectionsButton = view.findViewById(R.id.button_add_fake_detections) // Find the new button
         callTestNotificationButton = view.findViewById(R.id.button_call_test_notification) // Find the new button
         callGetImageButton  = view.findViewById(R.id.button_get_image)
+        viewDetectionsButton = view.findViewById(R.id.button_view_detections)
+
         setupButtonClickListeners()
         val safeContext: Context = requireContext()
 
@@ -119,9 +122,50 @@ class DevToolsFragment : Fragment() {
             }
         }
 
+        viewDetectionsButton.setOnClickListener {
+            viewDetections() // Call the function to view detections
+        }
+
     }
 
+    // --- Function to View Detections ---
+    private fun viewDetections() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            outputTextView.text = "Loading detection events..." // Show loading state
+            val detectionsResult: Result<List<Event>> = withContext(Dispatchers.IO) {
+                try {
+                    Result.success(databaseHelper.getAllDetectionEvents()) // Call DB helper
+                } catch (e: Exception) {
+                    Log.e("DevToolsFragment", "viewDetections: Exception loading events", e)
+                    Result.failure(e)
+                }
+            }
 
+            // Back on Main thread to update UI
+            if (detectionsResult.isSuccess) {
+                val events = detectionsResult.getOrNull() ?: emptyList()
+                if (events.isNotEmpty()) {
+                    // Format the list for display in the TextView
+                    val formattedText = StringBuilder("Detection Events (${events.size}):\n\n")
+                    events.forEach { event ->
+                        formattedText.append("ID: ${event.id}\n")
+                        formattedText.append("  Desc: ${event.description}\n")
+                        formattedText.append("  Time: ${event.timestamp}\n")
+                        formattedText.append("  Img Path: ${event.imagePath ?: "N/A"}\n")
+                        formattedText.append("--------------------\n")
+                    }
+                    outputTextView.text = formattedText.toString()
+                } else {
+                    outputTextView.text = "No detection events found in the database."
+                }
+            } else {
+                val errorMsg = "Error loading detections: ${detectionsResult.exceptionOrNull()?.message}"
+                outputTextView.text = errorMsg
+                Toast.makeText(requireContext(), errorMsg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    // --- End Function to View Detections ---
 
     // Helper function to show confirmation dialog
     private fun showConfirmationDialog(title: String, message: String, onConfirm: () -> Unit) {
@@ -223,7 +267,7 @@ class DevToolsFragment : Fragment() {
 
                     // Call the correct DatabaseHelper method
                     val success = try {
-                        databaseHelper.insertDetectionRecord(animal, timestampString, camera, imagePath)
+                        databaseHelper.insertDetectionRecord(i.toString() + timestampString ,animal, timestampString, camera, imagePath)
                     } catch (e: Exception) {
                         // Log specific insertion error if needed from fragment side
                         Log.e("DevToolsFragment", "Error calling insertDetectionRecord", e)

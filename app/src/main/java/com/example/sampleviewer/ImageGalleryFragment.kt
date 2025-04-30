@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.myapplication.R // Adjust R import
 import com.example.sampleviewer.database.DatabaseHelper // Import DatabaseHelper
+import com.example.sampleviewer.bt.BleManager // Import BleManager
 // Remove ViewBinding import
 // import com.example.myapplication.databinding.FragmentImageGalleryBinding
 import kotlinx.coroutines.Dispatchers // Import Dispatchers
@@ -28,12 +29,15 @@ class ImageGalleryFragment : Fragment() {
     private lateinit var galleryEmptyText: TextView
     private lateinit var imageAdapter: ImageGalleryAdapter
     private lateinit var databaseHelper: DatabaseHelper // Add DatabaseHelper instance
+    private lateinit var bleManager: BleManager // Hold BleManager instance
     // private lateinit var galleryViewModel: GalleryViewModel // TODO: Introduce a ViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Initialize DatabaseHelper here, requires context
         databaseHelper = DatabaseHelper(requireContext())
+        // Get BleManager instance (pass application context)
+        bleManager = BleManager.getInstance(requireContext().applicationContext)
     }
 
     override fun onCreateView(
@@ -56,19 +60,17 @@ class ImageGalleryFragment : Fragment() {
         // galleryViewModel = ViewModelProvider(this).get(GalleryViewModel::class.java)
 
         setupRecyclerView()
-        // setupObservers() // Keep commented until ViewModel is used
+        setupObservers() // Set up data observation
 
-        // --- Load data from Database ---
+        // --- Load initial data from Database ---
         loadEventsFromDatabase()
     }
 
     private fun setupRecyclerView() {
-        imageAdapter = ImageGalleryAdapter { event ->
-            // Handle click on an image item
-            Log.d("ImageGalleryFragment", "Image clicked: ${event.id}, Path: ${event.imagePath}")
-            // TODO: Implement action on click (e.g., show full screen)
-            Toast.makeText(requireContext(), "Clicked: ${event.description}", Toast.LENGTH_SHORT).show()
-        }
+        // *** Create adapter instance WITHOUT the click listener lambda ***
+        // The download click is handled inside the adapter's ViewHolder now.
+        // If you need clicks on the whole item for navigation, you'd pass a different listener here.
+        imageAdapter = ImageGalleryAdapter()
 
         galleryRecyclerView.apply {
             adapter = imageAdapter
@@ -76,29 +78,48 @@ class ImageGalleryFragment : Fragment() {
         }
     }
 
-    // --- REMOVED setupObservers() for now, as we load directly ---
-    // private fun setupObservers() { ... }
+    // --- Setup Observers ---
+    private fun setupObservers() {
+        // Observer for the Database Update Signal from BleManager
+        viewLifecycleOwner.lifecycleScope.launch {
+            bleManager.databaseUpdatedSignal.collectLatest { timestamp ->
+                Log.d("ImageGalleryFragment", "Database update signal received (Timestamp: ${timestamp.get()}). Reloading events.")
+                // Reload data from the database when signal received
+                loadEventsFromDatabase()
+            }
+        }
+
+        // Observer for the latest single image event (optional, for immediate UI feedback)
+        viewLifecycleOwner.lifecycleScope.launch {
+            bleManager.latestEventState.collectLatest { latestImageEvent ->
+                if (latestImageEvent != null) {
+                    Log.d("ImageGalleryFragment", "Latest image event state updated: ${latestImageEvent.id}")
+                    // Optional: Find item in adapter and update specifically?
+                    // Or just rely on the DB signal observer to refresh the list.
+                    // For simplicity, we rely on the DB signal for now.
+                }
+            }
+        }
+
+        // TODO: Add observer for ViewModel data if/when implemented
+    }
 
     // --- Function to load events from the database ---
     private fun loadEventsFromDatabase() {
-        // Use lifecycleScope to launch coroutine tied to fragment's lifecycle
         viewLifecycleOwner.lifecycleScope.launch {
-            Log.d("ImageGalleryFragment", "Starting to load events from database...")
-            galleryEmptyText.text = "Loading Images..."//getString(R.string.loading_images) // Show loading state
-            galleryEmptyText.visibility = View.VISIBLE
-            galleryRecyclerView.visibility = View.GONE
+            Log.d("ImageGalleryFragment", "Starting/Reloading events from database...")
+            // Show loading state? Maybe only if adapter is currently empty.
+            // if (imageAdapter.itemCount == 0) {
+            //    galleryEmptyText.text = getString(R.string.loading_images)
+            //    galleryEmptyText.visibility = View.VISIBLE
+            //    galleryRecyclerView.visibility = View.GONE
+            // }
 
-            // Perform database query on IO dispatcher
             val eventListResult: Result<List<Event>> = withContext(Dispatchers.IO) {
-                try {
-                    Result.success(databaseHelper.getAllDetections())
-                } catch (e: Exception) {
-                    Log.e("ImageGalleryFragment", "Error loading events from DB", e)
-                    Result.failure(e)
-                }
+                try { Result.success(databaseHelper.getAllDetectionEvents()) }
+                catch (e: Exception) { Log.e("ImageGalleryFragment", "Error loading events", e); Result.failure(e) }
             }
 
-            // Back on Main thread to update UI
             if (eventListResult.isSuccess) {
                 val eventList = eventListResult.getOrNull() ?: emptyList()
                 Log.d("ImageGalleryFragment", "Loaded ${eventList.size} events from database.")
@@ -115,17 +136,9 @@ class ImageGalleryFragment : Fragment() {
     // --- Helper to manage empty state visibility ---
     private fun updateEmptyState(isEmpty: Boolean) {
         if (view == null) return // Check if view is available
-        if (isEmpty) {
-            galleryEmptyText.text = "No images found!" //getString(R.string.no_images_found) // Set appropriate text
-            galleryEmptyText.visibility = View.VISIBLE
-            galleryRecyclerView.visibility = View.GONE
-        } else {
-            galleryEmptyText.visibility = View.GONE
-            galleryRecyclerView.visibility = View.VISIBLE
-        }
+        galleryEmptyText.text = ("No images found.") // Ensure correct text
+        galleryEmptyText.visibility = if (isEmpty) View.VISIBLE else View.GONE
+        galleryRecyclerView.visibility = if (isEmpty) View.GONE else View.VISIBLE
     }
-
-    // --- Remove Dummy Data Function ---
-    // private fun loadDummyDataForNow() { ... }
 
 }

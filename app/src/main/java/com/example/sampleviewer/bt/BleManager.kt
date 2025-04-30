@@ -17,17 +17,23 @@ import android.os.Looper
 import com.example.myapplication.R
 import com.example.sampleviewer.Event
 import com.example.sampleviewer.Node
+import com.example.sampleviewer.NotificationHelper
+import com.example.sampleviewer.database.DatabaseHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -63,10 +69,98 @@ class BleManager private constructor(private val applicationContext: Context) {
     private val _latestEventState = MutableStateFlow<Event?>(null)
     val latestEventState: StateFlow<Event?> = _latestEventState.asStateFlow()
 
+    // --- *** NEW: StateFlow to signal DB updates *** ---
+    // We use AtomicLong to ensure the value changes even if updates are rapid.
+    // Fragments will observe this; when it changes, they reload from DB.
+    private val _databaseUpdatedSignal = MutableStateFlow(AtomicLong(System.currentTimeMillis()))
+    val databaseUpdatedSignal: StateFlow<AtomicLong> = _databaseUpdatedSignal.asStateFlow()
+
 
     private val _nodeListState = MutableStateFlow<List<Node>>(emptyList())
     // Public immutable StateFlow that the UI can observe
     val nodeListState: StateFlow<List<Node>> = _nodeListState.asStateFlow()
+
+
+    private val _isImageDownloadActive = MutableStateFlow(false)
+    val isImageDownloadActive: StateFlow<Boolean> = _isImageDownloadActive.asStateFlow()
+    private var currentDownloadingImageUUID: String? = null
+    private val downloadMutex = Mutex() // To prevent race conditions when starting download
+
+
+
+    // --- *** NEW: Function to Request Image Download *** ---
+    /**
+     * Requests the image for a specific event from the corresponding Edge Node.
+     * Checks if download is already active or image already exists locally.
+     *
+     * @param nodeId The LoRa Node ID of the Edge device.
+     * @param eventUUID The unique ID of the detection event/image.
+     * @return Triple<Boolean, Boolean, String> - Indicates:
+     * 1. Boolean: If the request was successfully *sent* via BLE (true) or not (false).
+     * 2. Boolean: If the request was *attempted* (true) or skipped due to busy/exists (false).
+     * 3. String: A user-friendly status message.
+     */
+    suspend fun requestImageForEvent(nodeId: String, eventUUID: String): Triple<Boolean, Boolean, String> {
+        if (!isConnected) {
+            return Triple(false, false, "Not connected to device.")
+        }
+        if (eventUUID.isBlank()) {
+            return Triple(false, false, "Invalid Event ID.")
+        }
+
+        // Use mutex to prevent multiple requests starting simultaneously
+        downloadMutex.withLock {
+            if (_isImageDownloadActive.value) {
+                val currentUUID = currentDownloadingImageUUID
+                val message = if (currentUUID == eventUUID) "Download already in progress for this image." else "Another image download is currently active."
+                Log.w("BleManager", message)
+                return Triple(false, false, message) // Indicate skipped, not attempted
+            }
+
+            // Check DB if image path already exists *before* starting request
+            val existingPath = withContext(Dispatchers.IO) { // DB access off main thread
+                dbHelper.getImagePathForEvent(eventUUID)
+            }
+
+            if (existingPath != null) {
+                // Check if file actually exists at that path (might have been deleted)
+                val fileExists = File(existingPath).exists()
+                if (fileExists) {
+                    Log.i("BleManager", "Image for $eventUUID already exists locally at: $existingPath")
+                    return Triple(false, false, "Image already downloaded.") // Indicate skipped, not attempted
+                } else {
+                    Log.w("BleManager", "Image path exists in DB for $eventUUID, but file missing. Proceeding with request.")
+                    // Optional: Update DB to clear the missing path?
+                    // withContext(Dispatchers.IO) { dbHelper.updateImagePathForEvent(eventUUID, null) }
+                }
+            }
+
+            // --- Checks passed, proceed with request ---
+            val command = "REQUEST_IMAGE;$nodeId;$eventUUID\n" // Include Node ID and UUID
+            Log.i("BleManager", "Requesting image: $command")
+
+            // Set state *before* sending command
+            _isImageDownloadActive.value = true
+            currentDownloadingImageUUID = eventUUID
+
+            val success = sendData(command.toByteArray(Charsets.UTF_8))
+
+            if (!success) {
+                Log.e("BleManager", "Failed to initiate REQUEST_IMAGE send.")
+                // Reset state if send initiation failed
+                _isImageDownloadActive.value = false
+                currentDownloadingImageUUID = null
+                return Triple(false, true, "Failed to send request.") // Indicate attempted but failed send
+            } else {
+                Log.d("BleManager", "REQUEST_IMAGE command sent successfully.")
+                return Triple(true, true, "Image request sent.") // Indicate attempted and sent successfully
+            }
+        } // End mutex lock
+    }
+    // --- *** End New Function *** ---
+
+
+
 
 
     fun registerDataListener(listener: BleDataListener) {
@@ -375,205 +469,322 @@ class BleManager private constructor(private val applicationContext: Context) {
         private val NODE_LIST_END_MARKER = "NODES_INFO_END\n"
         private val IMAGE_DATA_START_MARKER = "LoRaImage;"
         private val MESSAGE_TERMINATOR = "\n" // Assuming newline terminates all message types
+
+        private val IMAGE_DATA_END_MARKER = "\n" // Newline terminates the Base64 string
+        private val DETECTION_ALERT_START_MARKER = "LoRaDetect;" // New marker for detection alerts
+        private val DETECTION_ALERT_END_MARKER = "\n" // Assume newline terminates alerts too
         // --- *** UPDATED onCharacteristicChanged *** ---
         // --- *** REVISED onCharacteristicChanged - Robust Parsing *** ---
-        @Deprecated("Deprecated in Java")
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            val value = characteristic.value ?: return
-            val chunk = String(value, Charsets.UTF_8)
-            // Log.d("BleManager", "Received chunk: $chunk") // Verbose
 
-            bleNotificationBuffer.append(chunk) // Append new chunk
+        // --- onCharacteristicChanged (Handles Notifications) ---
+        @Deprecated("Deprecated in API 33")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            handleCharacteristicChanged(characteristic.value)
+        }
+        // Newer callback for API 33+
+        // override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) { handleCharacteristicChanged(value) }
 
-            // --- Process Buffer for Complete Messages (Loop until no more complete messages found) ---
-            var processedMessageInLoop = true // Flag to re-check buffer after processing one message
+        // --- Central handler for characteristic changes ---
+        private fun handleCharacteristicChanged(value: ByteArray?) {
+            val data = value ?: return
+            val chunk = String(data, Charsets.UTF_8)
+            synchronized(bleNotificationBuffer) { bleNotificationBuffer.append(chunk) }
+            synchronized(bleNotificationBuffer) { processBufferedNotifications() }
+        }
+
+        // --- Process Buffer Logic ---
+        private fun processBufferedNotifications() {
+            var processedMessageInLoop = true
             while(processedMessageInLoop) {
-                processedMessageInLoop = false // Reset flag for this iteration
+                processedMessageInLoop = false
+                val bufferContent = bleNotificationBuffer.toString()
 
-                // 1. Check for complete Node List message
-                val nodeListStartIndex = bleNotificationBuffer.indexOf(NODE_LIST_START_MARKER)
+                // Priority: Check for specific message types first
+
+                // 1. Check for complete Detection Alert message
+                val detectionStartIndex = bufferContent.indexOf(DETECTION_ALERT_START_MARKER)
+                if (detectionStartIndex != -1) {
+                    val detectionEndIndex = bufferContent.indexOf(DETECTION_ALERT_END_MARKER, detectionStartIndex + DETECTION_ALERT_START_MARKER.length)
+                    if (detectionEndIndex != -1) {
+                        Log.d("BleManager", "Complete Detection Alert message found.")
+                        val messageContent = bufferContent.substring(
+                            detectionStartIndex + DETECTION_ALERT_START_MARKER.length,
+                            detectionEndIndex
+                        )
+                        processAndSaveDetectionAlert(messageContent) // Process the alert
+
+                        // Remove processed message from buffer
+                        val endOfMessage = detectionEndIndex + DETECTION_ALERT_END_MARKER.length
+                        bleNotificationBuffer.delete(0, endOfMessage)
+                        Log.d("BleManager", "Processed and removed Detection Alert message. Buffer size: ${bleNotificationBuffer.length}")
+                        processedMessageInLoop = true
+                        continue // Re-check buffer
+                    }
+                }
+
+                // 2. Check for complete Image Data message
+                val imageStartIndex = bufferContent.indexOf(IMAGE_DATA_START_MARKER)
+                if (imageStartIndex != -1) {
+                    val imageEndIndex = bufferContent.indexOf(IMAGE_DATA_END_MARKER, imageStartIndex + IMAGE_DATA_START_MARKER.length)
+                    if (imageEndIndex != -1) {
+                        Log.d("BleManager", "Complete Image Data message found.")
+                        val messageContent = bufferContent.substring(
+                            imageStartIndex + IMAGE_DATA_START_MARKER.length,
+                            imageEndIndex
+                        )
+                        processImageData(messageContent) // Process extracted Base64
+
+                        // Remove processed message from buffer
+                        val endOfMessage = imageEndIndex + IMAGE_DATA_END_MARKER.length
+                        bleNotificationBuffer.delete(0, endOfMessage)
+                        Log.d("BleManager", "Processed and removed Image Data message. Buffer size: ${bleNotificationBuffer.length}")
+                        processedMessageInLoop = true
+                        continue // Re-check buffer
+                    }
+                }
+
+                // 3. Check for complete Node List message
+                val nodeListStartIndex = bufferContent.indexOf(NODE_LIST_START_MARKER)
                 if (nodeListStartIndex != -1) {
-                    val nodeListEndIndex = bleNotificationBuffer.indexOf(NODE_LIST_END_MARKER, nodeListStartIndex)
+                    val nodeListEndIndex = bufferContent.indexOf(NODE_LIST_END_MARKER, nodeListStartIndex)
                     if (nodeListEndIndex != -1) {
-                        // Found complete node list message
-                        Log.d("BleManager", "Complete Node List message found in buffer.")
-                        val messageContent = bleNotificationBuffer.substring(
+                        Log.d("BleManager", "Complete Node List message found.")
+                        val messageContent = bufferContent.substring(
                             nodeListStartIndex + NODE_LIST_START_MARKER.length,
                             nodeListEndIndex
                         )
                         val parsedNodes = parseNodeInfoString(messageContent)
-                        Log.d("BleManager", "Parsed ${parsedNodes.size} nodes. Updating StateFlow.")
-                        _nodeListState.value = parsedNodes // Update state
+                        _nodeListState.value = parsedNodes // Update node list state
 
-                        // Remove the processed message (including markers) from the buffer
+                        // Remove processed message from buffer
                         val endOfMessage = nodeListEndIndex + NODE_LIST_END_MARKER.length
-                        bleNotificationBuffer.delete(0, endOfMessage) // Assume message is at the start
+                        bleNotificationBuffer.delete(0, endOfMessage)
                         Log.d("BleManager", "Processed and removed Node List message. Buffer size: ${bleNotificationBuffer.length}")
-                        processedMessageInLoop = true // Signal to check buffer again
-                        continue // Restart while loop to check for more messages
+                        processedMessageInLoop = true
+                        continue // Re-check buffer
                     }
-                    // Else: Start marker found, but not end marker yet. Keep buffering.
                 }
 
-                // 2. Check for complete Image Data message
-                val imageStartIndex = bleNotificationBuffer.indexOf(IMAGE_DATA_START_MARKER)
-                if (imageStartIndex != -1) {
-                    // Look for the newline terminator *after* the start marker
-                    val imageEndIndex = bleNotificationBuffer.indexOf(MESSAGE_TERMINATOR, imageStartIndex + IMAGE_DATA_START_MARKER.length)
-                    if (imageEndIndex != -1) {
-                        // Found complete image message
-                        Log.d("BleManager", "Complete Image Data message found in buffer.")
+                // 4. Check for other message types if needed...
 
-                        // Extract the content between the start marker and the end marker (newline)
-                        val messageContent = bleNotificationBuffer.substring(
-                            imageStartIndex + IMAGE_DATA_START_MARKER.length,
-                            imageEndIndex // Extract content up to (but not including) the newline
-                        )
-                        processImageData(messageContent) // Process the extracted Base64 data
+            } // End while
 
-                        // Remove the processed message (including start marker and terminator) from the buffer
-                        val endOfMessage = imageEndIndex + MESSAGE_TERMINATOR.length
-                        bleNotificationBuffer.delete(0, endOfMessage) // Assume message is at the start
-                        Log.d("BleManager", "Processed and removed Image Data message. Buffer size: ${bleNotificationBuffer.length}")
-                        processedMessageInLoop = true // Signal to check buffer again
-                        continue // Restart while loop to check for more messages
-                    }
-                    // Else: Start marker found, but not end marker yet. Keep buffering.
-                }
-
-                // 3. Check for other message types if needed...
-
-            } // End while(processedMessageInLoop)
-
-            // If buffer gets excessively large without finding markers, maybe clear it?
-            // Arbitrary length based off hoping to fix it if it gets too large.
-            if (bleNotificationBuffer.length > 16000) { // Example threshold
-                Log.w("BleManager", "BLE buffer large (${bleNotificationBuffer.length}), potentially stuck. Clearing.")
+            // Safety buffer clear
+            if (bleNotificationBuffer.length > 15000) {
+                Log.w("BleManager", "BLE buffer large (${bleNotificationBuffer.length}), clearing.")
                 bleNotificationBuffer.clear()
             }
-
-        } // --- *** End REVISED onCharacteristicChanged *** ---
+        } // End processBufferedNotifications
 
     } // End gattCallback
 
+
+    // Inside BleManager.kt
+
+    // --- Image Processing Functions ---
     private fun processImageData(imageDataString: String) {
-        Log.d("BleManager", "Processing received image data string...")
-        // Expected format: Node:ID;ImgID:ID;Format:jpeg;Encoding:base64;Data:BASE64_STRING
+        // *** ADD LOGGING HERE ***
+        Log.d("BleManager_ParseDebug", "--- Processing Image Data ---")
+        Log.d("BleManager_ParseDebug", "Input String (length ${imageDataString.length}): [$imageDataString]")
+        // *** END LOGGING ***
+
         val parts = imageDataString.split(';')
         val dataMap = mutableMapOf<String, String>()
         parts.forEach { part ->
             val keyValue = part.split(':', limit = 2)
             if (keyValue.size == 2) {
-                dataMap[keyValue[0]] = keyValue[1]
+                val key = keyValue[0].trim()
+                val value = keyValue[1].trim()
+                dataMap[key] = value
+                // *** ADD LOGGING HERE ***
+                Log.v("BleManager_ParseDebug", "Parsed Pair: Key='${key}', Value='${value}'")
+                // *** END LOGGING ***
+            } else {
+                // *** ADD LOGGING HERE ***
+                Log.w("BleManager_ParseDebug", "Skipping invalid pair: '$part'")
+                // *** END LOGGING ***
             }
         }
 
+        // *** ADD LOGGING HERE ***
+        Log.d("BleManager_ParseDebug", "Resulting dataMap: $dataMap")
+        // *** END LOGGING ***
+
+        // Now extract values using the map
         val nodeId = dataMap["Node"]
-        val imgId = dataMap["ImgID"]
+        val eventUUID = dataMap["EventUUID"]
         val format = dataMap["Format"]
         val encoding = dataMap["Encoding"]
         val base64Data = dataMap["Data"]
 
-        if (nodeId != null && imgId != null && format == "jpeg" && encoding == "base64" && base64Data != null) {
-            Log.d("BleManager", "Image metadata parsed: Node=$nodeId, ImgID=$imgId")
-            // Decode and save the image in a background thread
+        // *** ADD LOGGING HERE ***
+        Log.d("BleManager_ParseDebug", "Extracted Values: Node=$nodeId, EventUUID=$eventUUID, Format=$format, Encoding=$encoding, Data Length=${base64Data?.length ?: "null"}")
+        // *** END LOGGING ***
+
+
+        if (nodeId != null && eventUUID != null && format == "jpeg" && encoding == "base64" && base64Data != null) {
+            Log.d("BleManager", "Image metadata successfully parsed: Node=$nodeId, EventUUID=$eventUUID") // Use parsed values in log
             CoroutineScope(Dispatchers.IO).launch {
-                decodeAndSaveImage(nodeId, imgId, base64Data)
+                decodeAndSaveImage(nodeId, eventUUID, base64Data)
             }
         } else {
-            Log.e("BleManager", "Failed to parse image data string. Format incorrect.")
-            Log.e("BleManager", "Received: $imageDataString")
-
+            Log.e("BleManager", "Failed to parse image data string. Format incorrect or missing required keys.")
+            Log.e("BleManager", "Received Map for failed parse: $dataMap") // Log map on failure too
         }
     }
 
 
-    // --- NEW Function to decode Base64, save Bitmap, update DB, and notify UI ---
     @OptIn(ExperimentalEncodingApi::class)
-    private fun decodeAndSaveImage(nodeId: String, imgId: String, base64Data: String) {
+    private fun decodeAndSaveImage(nodeId: String, eventUUID: String, base64Data: String) {
         try {
             Log.d("BleManager", "Decoding Base64 image data (length: ${base64Data.length})...")
-            // Decode Base64 string to byte array
-            val imageBytes = Base64.decode(base64Data) // Use Android's Base64
+            val imageBytes = Base64.decode(base64Data)
             Log.d("BleManager", "Decoded ${imageBytes.size} bytes.")
-
-            // Convert byte array to Bitmap
             val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-
             if (bitmap != null) {
                 Log.d("BleManager", "Bitmap created successfully.")
-                // Save the bitmap to internal storage
-                val filePath = saveBitmapToInternalStorage(bitmap, "img_${nodeId}_${imgId}_${System.currentTimeMillis()}.jpg")
+                // Use EventUUID in filename for uniqueness
+                val filename = "img_${nodeId}_${eventUUID}_${System.currentTimeMillis()}.jpg"
+                val filePath = saveBitmapToInternalStorage(bitmap, filename)
+                //if (filePath != null) {
+                Log.d("BleManager", "updateImagePathForEvent")
 
-                if (filePath != null) {
+                val updatedRows = dbHelper.updateImagePathForEvent(eventUUID, filePath)
+
+                Log.d("BleManager", "updateImagePathForEvent: " + updatedRows)
+
+                if (updatedRows > 0) {
+                        Log.d("BleManager", "Updated DB record for event $eventUUID with image path.")
+                        // Signal DB update AFTER successful update
+                        _databaseUpdatedSignal.value = AtomicLong(System.currentTimeMillis())
+                        Log.d("BleManager", "Signalled DB update (image path).")
+                    } else {
+                        // This might happen if the alert didn't arrive or wasn't saved first.
+                        Log.w("BleManager", "Could not find DB record for event $eventUUID to update image path.")
+                        // Option: Insert if not found? Or just log?
+                    }
+
                     Log.d("BleManager", "Image saved to: $filePath")
-
-                    // --- Create Event Object ---
-                    val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                    val currentTimestamp = timestampFormat.format(Date())
-
-                    // TODO: Get actual animal description based on detection logic later
-                    val description = "Detection from Node $nodeId"
-
-                    val newEvent = Event(
-                        id = imgId, // Use ImgID from LoRa as a unique ID for this event? Or generate UUID?
-                        description = description,
-                        timestamp = currentTimestamp,
-                        imagePath = filePath, // The path where the image is saved
-                        fallbackIconResId = android.R.drawable.ic_menu_camera // Replace with your actual placeholder drawable
-                    )
-
-                    // --- Store in Database (Example - Requires dbHelper instance) ---
-                    // val success = dbHelper.insertDetectionRecord(
-                    //     animal = description, // Or get specific animal later
-                    //     timestamp = currentTimestamp,
-                    //     camera = "Node $nodeId",
-                    //     imagePath = filePath
-                    // )
-                    // if (success) {
-                    //     Log.d("BleManager", "Detection record inserted into DB.")
-                    // } else {
-                    //     Log.e("BleManager", "Failed to insert detection record into DB.")
-                    // }
-
-                    // --- Notify UI by updating StateFlow ---
-                    _latestEventState.value = newEvent
+                    val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()); val currentTimestamp = timestampFormat.format(Date())
+                    val description = "Detection from Node $nodeId (Event: $eventUUID)" // Include UUID
+                    val newEvent = Event(id = eventUUID, description = description, timestamp = currentTimestamp, imagePath = filePath, fallbackIconResId = R.drawable.stc_logo_nobg)
+                    // Optional: DB Insert
+                    // val success = dbHelper.insertDetectionRecord(...)
+                    // Update StateFlow
+                    _latestEventState.value = newEvent // Emit the event object
                     Log.d("BleManager", "Updated latestEventState StateFlow.")
-
-                } else {
+               // } else {
                     Log.e("BleManager", "Failed to save bitmap to storage.")
-                }
-            } else {
-                Log.e("BleManager", "Failed to create bitmap from decoded bytes.")
-            }
-        } catch (e: IllegalArgumentException) {
-            Log.e("BleManager", "Error decoding Base64 string: ${e.message}")
-        } catch (e: Exception) {
-            Log.e("BleManager", "Error processing image data: ${e.message}", e)
-        }
+                //}
+            } else { Log.e("BleManager", "Failed to create bitmap from decoded bytes.") }
+        } catch (e: IllegalArgumentException) { Log.e("BleManager", "Error decoding Base64 string: ${e.message}")
+        } catch (e: Exception) { Log.e("BleManager", "Error processing image data: ${e.message}", e) }
     }
-
-    // --- NEW Helper function to save Bitmap to internal storage ---
     private fun saveBitmapToInternalStorage(bitmap: Bitmap, filename: String): String? {
         return try {
-            // Get the directory for the app's private files.
-            val directory = applicationContext.filesDir // Or getExternalFilesDir(null) for external?
-            if (!directory.exists()) {
-                directory.mkdirs()
+            val directory = applicationContext.filesDir; if (!directory.exists()) directory.mkdirs()
+            val file = File(directory, filename); val stream = FileOutputStream(file)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream); stream.flush(); stream.close()
+            Log.i("BleManager", "Bitmap saved to ${file.absolutePath}"); file.absolutePath
+        } catch (e: Exception) { Log.e("BleManager", "Error saving bitmap: ${e.message}", e); null }
+    }
+
+    // --- Node List Parsing Function ---
+    fun parseNodeInfoString(nodeData: String): List<Node> {
+        val nodes = mutableListOf<Node>()
+        val lines = nodeData.split('\n').filter { it.isNotBlank() }
+        for (line in lines) {
+            if (line.contains("No nodes currently tracked.")) { break }
+            val nodeMap = mutableMapOf<String, String>()
+            val pairs = line.split(';'); for (pair in pairs) { val parts = pair.split(':', limit = 2); if (parts.size == 2) nodeMap[parts[0].trim()] = parts[1].trim() }
+            val nodeIdStr = nodeMap["NodeID"]; val status = nodeMap["Status"] ?: "Unknown"; val lastSeen = nodeMap["LastSeen"] ?: "N/A"; val devId = nodeMap["DevID"]; val batteryStr = nodeMap["Battery"]
+            if (nodeIdStr != null) {
+                try {
+                    val nodeId = nodeIdStr; val batteryLevel = batteryStr?.filter { it.isDigit() }?.toIntOrNull()
+                    val node = Node(id = devId ?: nodeId, name = "Node $nodeId" + (devId?.let { " ($it)" } ?: ""), status = status, lastSeen = lastSeen, batteryLevel = batteryLevel, signalStrength = null)
+                    nodes.add(node)
+                } catch (e: Exception) { Log.e("NodeParser", "Error parsing line: '$line'", e) }
+            } else { Log.w("NodeParser", "Skipping line due to missing NodeID: '$line'") }
+        }
+        return nodes
+    }
+
+    // Inside BleManager.kt
+
+    // --- Database Helper Instance ---
+    // Ensure you have this initialized (e.g., using lazy delegate)
+    private val dbHelper: DatabaseHelper by lazy { DatabaseHelper(applicationContext) }
+
+    // --- UPDATED Function to parse, SAVE, and notify detection alerts ---
+    private fun processAndSaveDetectionAlert(alertDataString: String) {
+        Log.d("BleManager", "Processing and saving detection alert: $alertDataString")
+        // Expected format: Node:ID;EventUUID:ID;Mask:MASK;Conf:CONF;Time:TIME;BBox:X,Y,W,H
+        val parts = alertDataString.split(';')
+        val dataMap = mutableMapOf<String, String>()
+        parts.forEach { part ->
+            val keyValue = part.split(':', limit = 2)
+            if (keyValue.size == 2) dataMap[keyValue[0].trim()] = keyValue[1].trim()
+        }
+
+        val nodeId = dataMap["Node"]
+        val eventUUID = dataMap["EventUUID"] // Use this as the unique ID for the event
+        val maskStr = dataMap["Mask"]
+        val confStr = dataMap["Conf"]
+        val timeStr = dataMap["Time"] // Raw timestamp string from ESP32 (e.g., seconds or millis)
+        // val bboxStr = dataMap["BBox"] // Optional: Parse if needed
+
+        // *** Ensure essential fields are present ***
+        if (nodeId != null && eventUUID != null && maskStr != null && confStr != null && timeStr != null) {
+            try {
+                val mask = maskStr.toIntOrNull() ?: 0
+                val confidence = confStr.toIntOrNull() ?: 0
+                val cameraName = "Node $nodeId" // Construct camera name
+
+                // Convert mask to primary animal name(s) for DB/notification
+                val animals = mutableListOf<String>()
+                // Use constants if defined, otherwise use magic numbers carefully
+                if (mask and 0x01 != 0) animals.add("Squirrel") // ANIMAL_MASK_SQUIRREL
+                if (mask and 0x02 != 0) animals.add("Bird")     // ANIMAL_MASK_BIRD
+                if (mask and 0x04 != 0) animals.add("Cat")      // ANIMAL_MASK_CAT
+                if (mask and 0x08 != 0) animals.add("Dog")      // ANIMAL_MASK_DOG
+                // Add other masks as needed...
+                val animalString = if (animals.isEmpty()) "Unknown" else animals.joinToString(", ")
+
+                // --- *** SAVE TO DATABASE *** ---
+                // Call the insert function from DatabaseHelper shown in the Canvas
+                val dbSuccess = dbHelper.insertDetectionRecord(
+                    eventUUID = eventUUID,      // Pass UUID as the key
+                    animal = animalString,      // Store the derived animal name(s)
+                    timestamp = timeStr,        // Store raw timestamp string from ESP32
+                    camera = cameraName,
+                    imagePath = null            // Image path is null for an alert
+                )
+
+                if (!dbSuccess) {
+                    Log.e("BleManager", "Failed to insert detection alert (UUID: $eventUUID) into database!")
+                    // Consider how to handle DB insertion failure
+                    _databaseUpdatedSignal.value = AtomicLong(System.currentTimeMillis())
+
+                } else {
+                    Log.d("BleManager", "Detection alert (UUID: $eventUUID) saved to database.")
+                }
+                // --- *** END SAVE TO DATABASE *** ---
+
+
+                // --- Trigger System Notification ---
+                val title = "Animal Detected!"
+                val message = "$animalString detected by $cameraName (Conf: $confidence%). Event ID: $eventUUID"
+                Log.i("BleManager", "Triggering Notification: $message")
+                //NotificationHelper.sendNotification(applicationContext, title, message)
+                // --- End Trigger Notification ---
+
+
+            } catch (e: Exception) {
+                Log.e("BleManager", "Error processing/saving detection alert data: $alertDataString", e)
             }
-            val file = File(directory, filename)
-            val stream = FileOutputStream(file)
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream) // Compress as JPEG
-            stream.flush()
-            stream.close()
-            Log.i("BleManager", "Bitmap saved to ${file.absolutePath}")
-            file.absolutePath // Return the absolute path
-        } catch (e: Exception) {
-            Log.e("BleManager", "Error saving bitmap: ${e.message}", e)
-            null
+        } else {
+            Log.e("BleManager", "Failed to parse detection alert string (Missing fields?). Format incorrect.")
+            Log.e("BleManager", "Received Map: $dataMap")
         }
     }
 
@@ -652,82 +863,6 @@ class BleManager private constructor(private val applicationContext: Context) {
 
     ///////////////////////////////////////////
     // Add this function inside BleManager.kt or a separate utility class
-
-    /**
-     * Parses the node information string received from the Mother Node.
-     * Expected format per line:
-     * NodeID:1;Status:Online;LastSeen:10s;DevID:0xABCDEF12;Battery:85%
-     */
-    fun parseNodeInfoString(nodeData: String): List<Node> {
-        val nodes = mutableListOf<Node>()
-        val lines = nodeData.split('\n').filter { it.isNotBlank() } // Split into lines and remove empty ones
-
-        Log.d("NodeParser", "Parsing ${lines.size} lines.")
-
-        for (line in lines) {
-            if (line.contains("No nodes currently tracked.")) {
-                Log.d("NodeParser", "No nodes reported by Mother Node.")
-                break // Stop processing if no nodes line is found
-            }
-
-            val nodeMap = mutableMapOf<String, String>()
-            val pairs = line.split(';') // Split line into key-value pairs "Key:Value"
-
-            for (pair in pairs) {
-                val parts = pair.split(':', limit = 2) // Split pair into key and value
-                if (parts.size == 2) {
-                    val key = parts[0].trim()
-                    val value = parts[1].trim()
-                    nodeMap[key] = value
-                } else {
-                    Log.w("NodeParser", "Skipping invalid pair: '$pair' in line: '$line'")
-                }
-            }
-
-            // --- Extract data using the map, handling potential missing keys ---
-            val nodeIdStr = nodeMap["NodeID"]
-            val status = nodeMap["Status"] ?: "Unknown" // Default if missing
-            val lastSeen = nodeMap["LastSeen"] ?: "N/A"
-            val devId = nodeMap["DevID"] // Optional
-            val batteryStr = nodeMap["Battery"]
-
-            if (nodeIdStr != null) {
-                try {
-                    // Attempt to parse Node ID
-                    val nodeId = nodeIdStr // Keep Node ID as String matching your Node class? Or parse? Let's assume String for now.
-
-                    // Parse Battery Level (extract number before '%')
-                    val batteryLevel = batteryStr?.filter { it.isDigit() }?.toIntOrNull()
-
-                    // TODO: Parse Animal detection flags if they are sent in the future
-                    // Example: val animalMask = nodeMap["AnimalMask"]?.toIntOrNull() ?: 0
-                    // val detectCat = (animalMask and 0x04) != 0 // Assuming ANIMAL_MASK_CAT = 0x04
-
-                    // Create the Node object
-                    val node = Node(
-                        id = devId ?: nodeId, // Use DevID if available, else NodeID as unique ID
-                        name = "Node $nodeId" + (devId?.let { " ($it)" } ?: ""), // Create a name
-                        status = status,
-                        lastSeen = lastSeen,
-                        batteryLevel = batteryLevel,
-                        signalStrength = null // Signal strength not currently sent
-                        // Set animal detection flags based on parsed mask if implemented
-                    )
-                    nodes.add(node)
-                    Log.d("NodeParser", "Successfully parsed node: $node")
-
-                } catch (e: NumberFormatException) {
-                    Log.e("NodeParser", "Error parsing numeric value in line: '$line'", e)
-                } catch (e: Exception) {
-                    Log.e("NodeParser", "Error parsing line: '$line'", e)
-                }
-            } else {
-                Log.w("NodeParser", "Skipping line due to missing NodeID: '$line'")
-            }
-        } // End loop through lines
-
-        return nodes
-    }
 
 
 

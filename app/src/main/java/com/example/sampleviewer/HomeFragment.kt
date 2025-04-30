@@ -582,7 +582,7 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
             // IMPORTANT: Run database query on a background thread in a real app!
             try {
                 // Fetch all historical detections
-                val detectionEvents = databaseHelper.getAllDetections()
+                val detectionEvents = databaseHelper.getAllDetectionEvents()
                 activity?.runOnUiThread { // Ensure UI update is on main thread
                     eventAdapter.submitList(detectionEvents)
                     Log.d("HomeFragment", "Submitted ${detectionEvents.size} historical events to adapter.")
