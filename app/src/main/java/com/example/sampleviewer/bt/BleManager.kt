@@ -636,6 +636,8 @@ class BleManager private constructor(private val applicationContext: Context) {
 
     @OptIn(ExperimentalEncodingApi::class)
     private fun decodeAndSaveImage(nodeId: String, eventUUID: String, base64Data: String) {
+        _isImageDownloadActive.value = false
+
         try {
             Log.d("BleManager", "Decoding Base64 image data (length: ${base64Data.length})...")
             val imageBytes = Base64.decode(base64Data)
@@ -672,7 +674,9 @@ class BleManager private constructor(private val applicationContext: Context) {
                     // val success = dbHelper.insertDetectionRecord(...)
                     // Update StateFlow
                     _latestEventState.value = newEvent // Emit the event object
-                    Log.d("BleManager", "Updated latestEventState StateFlow.")
+                _isImageDownloadActive.value = false
+
+                Log.d("BleManager", "Updated latestEventState StateFlow.")
                // } else {
                     Log.e("BleManager", "Failed to save bitmap to storage.")
                 //}
