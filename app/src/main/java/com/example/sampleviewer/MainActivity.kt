@@ -19,6 +19,8 @@ class MainActivity : AppCompatActivity() {
     private val nodesFragment = NodesFragment()
     private val settingsFragment = SettingsFragment()
     private val devToolsFragment = DevToolsFragment()
+    private val imageGalleryFragment = ImageGalleryFragment()
+
     private val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
 
     companion object {
@@ -61,6 +63,10 @@ class MainActivity : AppCompatActivity() {
                     loadFragment(devToolsFragment)
                     true
                 }
+                R.id.navigation_image_library -> {
+                loadFragment(imageGalleryFragment)
+                true
+                 }
                 else -> false
             }
         }

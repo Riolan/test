@@ -1,5 +1,6 @@
 package com.example.sampleviewer // Adjust package name as needed
 
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import androidx.fragment.app.Fragment
@@ -60,6 +61,7 @@ class DevToolsFragment : Fragment() {
         callTestNotificationButton = view.findViewById(R.id.button_call_test_notification) // Find the new button
         callGetImageButton  = view.findViewById(R.id.button_get_image)
         setupButtonClickListeners()
+        val safeContext: Context = requireContext()
 
         // Initial message
         outputTextView.text = "Press a button to perform an action."
@@ -104,11 +106,11 @@ class DevToolsFragment : Fragment() {
 
 
         callGetImageButton.setOnClickListener {
-
-            if (BleManager.getInstance().isConnected()) {
+            val safeContext = requireContext()
+            if (BleManager.getInstance(safeContext).isConnected()) {
                 val selectedNodeId: String = "1" // Get this from user selection
                 val command = "REQUEST_IMAGE;${selectedNodeId}\n"
-                val success = BleManager.getInstance().sendData(command.toByteArray(Charsets.UTF_8))
+                val success = BleManager.getInstance(safeContext).sendData(command.toByteArray(Charsets.UTF_8))
                 if (!success) {
                     Log.e("NodesFragment", "Failed to send REQUEST_NODES command.")
                 }

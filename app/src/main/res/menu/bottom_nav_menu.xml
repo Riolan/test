@@ -14,6 +14,11 @@
         android:icon="@android:drawable/ic_menu_manage" android:title="@string/title_settings" />
 
     <item
+        android:id="@+id/navigation_image_library"
+        android:icon="@android:drawable/ic_menu_gallery"
+        android:title="Image Library" />
+
+    <item
         android:id="@+id/navigation_dev_tools"
         android:icon="@drawable/baseline_admin_panel_settings_24"
         android:title="Dev Tools" />

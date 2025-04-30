@@ -60,16 +60,20 @@ class NodesFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        BleManager.getInstance().registerConnectionListener(connectionListener)
-        updateConnectionStatusDisplay(BleManager.getInstance().isConnected())
-        if (BleManager.getInstance().isConnected()) {
+        val safeContext = requireContext()
+
+        BleManager.getInstance(safeContext).registerConnectionListener(connectionListener)
+        updateConnectionStatusDisplay(BleManager.getInstance(safeContext).isConnected())
+        if (BleManager.getInstance(safeContext).isConnected()) {
             requestNodeDataFromDevice()
         }
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        BleManager.getInstance().unregisterConnectionListener(connectionListener)
+        val safeContext = requireContext()
+
+        BleManager.getInstance(safeContext).unregisterConnectionListener(connectionListener)
     }
 
     private fun setupRecyclerView() {
@@ -106,10 +110,12 @@ class NodesFragment : Fragment() {
     }
 
     private fun requestNodeDataFromDevice() {
-        if (BleManager.getInstance().isConnected()) {
+        val safeContext = requireContext()
+
+        if (BleManager.getInstance(safeContext).isConnected()) {
             Log.d("NodesFragment", "Sending REQUEST_NODES command...")
             val command = "REQUEST_NODES\n"
-            val success = BleManager.getInstance().sendData(command.toByteArray(Charsets.UTF_8))
+            val success = BleManager.getInstance(safeContext).sendData(command.toByteArray(Charsets.UTF_8))
             if (!success) {
                 Log.e("NodesFragment", "Failed to send REQUEST_NODES command.")
             }
@@ -121,8 +127,10 @@ class NodesFragment : Fragment() {
 
     // Observe the StateFlow from BleManager
     private fun setupObservers() {
+        val safeContext = requireContext()
+
         viewLifecycleOwner.lifecycleScope.launch {
-            BleManager.getInstance().nodeListState.collectLatest { nodesFromBle ->
+            BleManager.getInstance(safeContext).nodeListState.collectLatest { nodesFromBle ->
                 // This block executes when BleManager provides a new list
                 Log.d("NodesFragment", "Observer received ${nodesFromBle.size} nodes from BleManager.")
 

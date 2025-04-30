@@ -152,9 +152,12 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
 
     override fun onStart() {
         super.onStart()
+
+        val safeContext = requireContext()
+
         // Register listeners when the fragment becomes visible
-        BleManager.getInstance().registerDataListener(this)
-        BleManager.getInstance().registerConnectionListener(this)
+        BleManager.getInstance(safeContext).registerDataListener(this)
+        BleManager.getInstance(safeContext).registerConnectionListener(this)
         // Update UI in case state changed while fragment was paused
         updateStatusUI()
         loadDetectionEvents()
@@ -162,9 +165,12 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
 
     override fun onStop() {
         super.onStop()
+
+        val safeContext = requireContext()
+
         // Unregister listeners when the fragment is no longer visible
-        BleManager.getInstance().unregisterDataListener(this)
-        BleManager.getInstance().unregisterConnectionListener(this)
+        BleManager.getInstance(safeContext).unregisterDataListener(this)
+        BleManager.getInstance(safeContext).unregisterConnectionListener(this)
         // Stop scanning if the fragment is stopped
         stopBleScan()
     }
@@ -221,7 +227,9 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
             }
 
             // 3. Perform Action based on Connection State
-            if (BleManager.getInstance().isConnected()) {
+            val safeContext = requireContext()
+
+            if (BleManager.getInstance(safeContext).isConnected()) {
                 handleDisconnect()
             } else {
                 showDeviceScanDialog()
@@ -442,7 +450,9 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
 
     @SuppressLint("MissingPermission") // Permissions checked before calling
     private fun connectToDevice(device: BluetoothDevice) {
-        if (BleManager.getInstance().isConnected()) {
+        val safeContext = requireContext()
+
+        if (BleManager.getInstance(safeContext).isConnected()) {
             Toast.makeText(requireContext(), "Already connected", Toast.LENGTH_SHORT).show()
             return
         }
@@ -451,23 +461,26 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
         Log.i("BLE", "Attempting to connect to ${device.name} (${device.address})")
 
         // Initiate connection - BleManager handles the callbacks
-        val gatt = device.connectGatt(requireContext(), false, BleManager.getInstance().gattCallback, BluetoothDevice.TRANSPORT_LE)
+        val gatt = device.connectGatt(requireContext(), false, BleManager.getInstance(safeContext).gattCallback, BluetoothDevice.TRANSPORT_LE)
 
         // Let BleManager manage the GATT instance and current device
-        BleManager.getInstance().setGatt(gatt)
-        BleManager.getInstance().setCurrentDevice(device)
+
+        BleManager.getInstance(safeContext).setGatt(gatt)
+        BleManager.getInstance(safeContext).setCurrentDevice(device)
 
         // UI will be updated via the BleConnectionListener callbacks (onDeviceConnected/onDeviceDisconnected)
     }
 
     private fun handleDisconnect() {
-        if (!BleManager.getInstance().isConnected()) {
+        val safeContext = requireContext()
+
+        if (!BleManager.getInstance(safeContext).isConnected()) {
             Toast.makeText(requireContext(), "Not connected", Toast.LENGTH_SHORT).show()
             return
         }
         Toast.makeText(requireContext(), "Disconnecting...", Toast.LENGTH_SHORT).show()
         Log.i("BLE", "Disconnect requested by user.")
-        BleManager.getInstance().disconnect()
+        BleManager.getInstance(safeContext).disconnect()
         // UI update happens via onDeviceDisconnected callback
     }
 
@@ -477,10 +490,10 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
     @SuppressLint("MissingPermission") // Checks BT Connect on newer APIs indirectly
     private fun updateStatusUI() {
         val context = requireContext() // Use requireContext() safely within fragment lifecycle methods
-        val isCurrentlyConnected = BleManager.getInstance().isConnected() // Check actual state
+        val isCurrentlyConnected = BleManager.getInstance(context).isConnected() // Check actual state
 
         if (isCurrentlyConnected) {
-            val deviceName = BleManager.getInstance().getCurrentDevice()?.name ?: "Device"
+            val deviceName = BleManager.getInstance(context).getCurrentDevice()?.name ?: "Device"
             connectionStatusLabel.text = getString(R.string.status_connected_to, deviceName)
             // Fix: Provide a valid drawable ID for connected state
             connectionStatusLabel.setCompoundDrawablesWithIntrinsicBounds(
