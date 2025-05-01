@@ -735,7 +735,7 @@ class BleManager private constructor(private val applicationContext: Context) {
         val maskStr = dataMap["Mask"]
         val confStr = dataMap["Conf"]
         val timeStr = dataMap["Time"] // Raw timestamp string from ESP32 (e.g., seconds or millis)
-        // val bboxStr = dataMap["BBox"] // Optional: Parse if needed
+        val bboxStr = dataMap["BBox"] // Optional: Parse if needed
 
         // *** Ensure essential fields are present ***
         if (nodeId != null && eventUUID != null && maskStr != null && confStr != null && timeStr != null) {
@@ -779,7 +779,7 @@ class BleManager private constructor(private val applicationContext: Context) {
                 val title = "Animal Detected!"
                 val message = "$animalString detected by $cameraName (Conf: $confidence%). Event ID: $eventUUID"
                 Log.i("BleManager", "Triggering Notification: $message")
-                //NotificationHelper.sendNotification(applicationContext, title, message)
+                NotificationHelper.sendNotification(applicationContext, title, message)
                 // --- End Trigger Notification ---
 
 
