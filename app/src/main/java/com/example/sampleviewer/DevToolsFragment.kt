@@ -267,7 +267,7 @@ class DevToolsFragment : Fragment() {
 
                     // Call the correct DatabaseHelper method
                     val success = try {
-                        databaseHelper.insertDetectionRecord(i.toString() + timestampString ,animal, timestampString, camera, imagePath)
+                        databaseHelper.insertDetectionRecord(i.toString() + timestampString ,animal, timestampString, camera, imagePath, 20, 30, 80, 60, "SAMPLE-DEVICE-ID")
                     } catch (e: Exception) {
                         // Log specific insertion error if needed from fragment side
                         Log.e("DevToolsFragment", "Error calling insertDetectionRecord", e)

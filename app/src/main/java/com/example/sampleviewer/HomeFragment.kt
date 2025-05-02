@@ -135,8 +135,8 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
 
         // --- Initialize UI Elements ---
         connectionStatusLabel = view.findViewById(R.id.connection_status_label)
-        batteryStatusLabel = view.findViewById(R.id.battery_status_label)
-        signalStatusLabel = view.findViewById(R.id.signal_status_label)
+       // batteryStatusLabel = view.findViewById(R.id.battery_status_label)
+       // signalStatusLabel = view.findViewById(R.id.signal_status_label)
         connectButton = view.findViewById(R.id.button_connect)
         eventsRecyclerView = view.findViewById(R.id.events_recycler_view)
 
@@ -502,7 +502,7 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
             )
 
             // Placeholder for Battery Good/Full
-            batteryStatusLabel.text = getString(R.string.battery_good)
+            /*batteryStatusLabel.text = getString(R.string.battery_good)
             batteryStatusLabel.setCompoundDrawablesWithIntrinsicBounds(
                 ContextCompat.getDrawable(context, android.R.drawable.ic_lock_idle_charging), // Charging icon placeholder
                 null, null, null
@@ -514,7 +514,7 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
                 // Using a generic positive status icon as placeholder
                 ContextCompat.getDrawable(context, android.R.drawable.ic_dialog_info), // Info icon placeholder
                 null, null, null
-            )
+            )*/
 
             // Update Button for Disconnect state
             connectButton.text = getString(R.string.disconnect)
@@ -529,7 +529,7 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
             )
 
             // Placeholder for Battery Unknown
-            batteryStatusLabel.text = getString(R.string.battery_unknown)
+            /*batteryStatusLabel.text = getString(R.string.battery_unknown)
             batteryStatusLabel.setCompoundDrawablesWithIntrinsicBounds(
                 ContextCompat.getDrawable(context, android.R.drawable.ic_lock_idle_low_battery), // Low battery icon placeholder
                 null, null, null
@@ -541,7 +541,7 @@ class HomeFragment : Fragment(), BleDataListener, BleConnectionListener {
                 // Using a generic alert/unknown icon as placeholder
                 ContextCompat.getDrawable(context, android.R.drawable.ic_dialog_alert), // Alert icon placeholder
                 null, null, null
-            )
+            )*/
 
             // Update Button for Connect state
             connectButton.text = getString(R.string.connect)

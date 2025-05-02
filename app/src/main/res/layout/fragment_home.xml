@@ -41,7 +41,11 @@
                     android:layout_weight="1"
                     android:text="@string/status_disconnected"
                     android:textAppearance="?attr/textAppearanceBody1"
-                    app:drawableStartCompat="@android:drawable/stat_sys_warning" /> <TextView
+                    app:drawableStartCompat="@android:drawable/stat_sys_warning" />
+
+
+
+                <!--<TextView
                 android:id="@+id/battery_status_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -55,7 +59,7 @@
                 android:layout_weight="1"
                 android:text="@string/signal_unknown"
                 android:textAppearance="?attr/textAppearanceBody1"
-                app:drawableStartCompat="@android:drawable/ic_menu_info_details" /> </LinearLayout>
+                app:drawableStartCompat="@android:drawable/ic_menu_info_details" /> --></LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/button_connect"

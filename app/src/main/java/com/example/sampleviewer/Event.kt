@@ -3,6 +3,8 @@ package com.example.sampleviewer
 import androidx.annotation.DrawableRes
 
 data class Event(
+    val nodeId: String,
+
     val id: String,
     val description: String,
     val timestamp: String, // Ideally pre-formatted for display

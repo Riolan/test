@@ -9,10 +9,10 @@
         android:id="@+id/navigation_nodes"
         android:icon="@android:drawable/ic_menu_share" android:title="@string/title_nodes" />
 
-    <item
+    <!--<item
         android:id="@+id/navigation_settings"
         android:icon="@android:drawable/ic_menu_manage" android:title="@string/title_settings" />
-
+-->
     <item
         android:id="@+id/navigation_image_library"
         android:icon="@android:drawable/ic_menu_gallery"

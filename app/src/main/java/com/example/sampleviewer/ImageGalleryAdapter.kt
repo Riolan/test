@@ -16,15 +16,13 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.example.myapplication.R // Adjust R import
 import com.example.sampleviewer.bt.BleManager
-import com.example.sampleviewer.BoundingBoxView // Import custom view
+import com.example.sampleviewer.ui.BoundingBoxView // Import custom view
 import java.io.File
 import java.io.FileInputStream
 import kotlinx.coroutines.*
 
 
-class ImageGalleryAdapter(
-    // No listener passed in constructor anymore
-) : ListAdapter<Event, ImageGalleryAdapter.EventImageViewHolder>(EventDiffCallback()) {
+class ImageGalleryAdapter(): ListAdapter<Event, ImageGalleryAdapter.EventImageViewHolder>(EventDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): EventImageViewHolder {
         val view = LayoutInflater.from(parent.context)

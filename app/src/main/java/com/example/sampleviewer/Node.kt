@@ -16,6 +16,8 @@ import java.util.UUID
 
 data class Node(
     val id: String = UUID.randomUUID().toString(),
+    val deviceId: String?,
+    val nodeId: String = UUID.randomUUID().toString(),
     val name: String,
     val status: String,
     val lastSeen: String,
@@ -26,5 +28,8 @@ data class Node(
     val detectCat: Boolean = false,
     val detectDog: Boolean = false,
     val detectSquirrel: Boolean = false,
-    val detectBird: Boolean = false
+    val detectBird: Boolean = false,
+    var alertMask: Int? = null, // Bitmask for which animals trigger alerts
+
+    var detectionThreshold: Int? = null
 )

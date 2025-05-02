@@ -10,10 +10,12 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.util.Log
 import java.util.UUID
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import com.example.myapplication.R
 import com.example.sampleviewer.Event
 import com.example.sampleviewer.Node
@@ -31,6 +33,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -477,6 +482,7 @@ class BleManager private constructor(private val applicationContext: Context) {
         // --- *** REVISED onCharacteristicChanged - Robust Parsing *** ---
 
         // --- onCharacteristicChanged (Handles Notifications) ---
+        @RequiresApi(Build.VERSION_CODES.O)
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             handleCharacteristicChanged(characteristic.value)
@@ -485,6 +491,7 @@ class BleManager private constructor(private val applicationContext: Context) {
         // override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) { handleCharacteristicChanged(value) }
 
         // --- Central handler for characteristic changes ---
+        @RequiresApi(Build.VERSION_CODES.O)
         private fun handleCharacteristicChanged(value: ByteArray?) {
             val data = value ?: return
             val chunk = String(data, Charsets.UTF_8)
@@ -493,6 +500,7 @@ class BleManager private constructor(private val applicationContext: Context) {
         }
 
         // --- Process Buffer Logic ---
+        @RequiresApi(Build.VERSION_CODES.O)
         private fun processBufferedNotifications() {
             var processedMessageInLoop = true
             while(processedMessageInLoop) {
@@ -637,7 +645,7 @@ class BleManager private constructor(private val applicationContext: Context) {
     @OptIn(ExperimentalEncodingApi::class)
     private fun decodeAndSaveImage(nodeId: String, eventUUID: String, base64Data: String) {
         _isImageDownloadActive.value = false
-
+        var imageSavedAndDbUpdated = false
         try {
             Log.d("BleManager", "Decoding Base64 image data (length: ${base64Data.length})...")
             val imageBytes = Base64.decode(base64Data)
@@ -667,13 +675,13 @@ class BleManager private constructor(private val applicationContext: Context) {
                     }
 
                     Log.d("BleManager", "Image saved to: $filePath")
-                    val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()); val currentTimestamp = timestampFormat.format(Date())
-                    val description = "Detection from Node $nodeId (Event: $eventUUID)" // Include UUID
-                    val newEvent = Event(id = eventUUID, description = description, timestamp = currentTimestamp, imagePath = filePath, fallbackIconResId = R.drawable.stc_logo_nobg)
+                    //val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()); val currentTimestamp = timestampFormat.format(Date())
+                    //val description = "Detection from Node $nodeId (Event: $eventUUID)" // Include UUID
+                    //val newEvent = Event(id = eventUUID, description = description, timestamp = currentTimestamp, imagePath = filePath, fallbackIconResId = R.drawable.stc_logo_nobg)
                     // Optional: DB Insert
                     // val success = dbHelper.insertDetectionRecord(...)
                     // Update StateFlow
-                    _latestEventState.value = newEvent // Emit the event object
+                    //_latestEventState.value = newEvent // Emit the event object
                 _isImageDownloadActive.value = false
 
                 Log.d("BleManager", "Updated latestEventState StateFlow.")
@@ -693,24 +701,44 @@ class BleManager private constructor(private val applicationContext: Context) {
         } catch (e: Exception) { Log.e("BleManager", "Error saving bitmap: ${e.message}", e); null }
     }
 
-    // --- Node List Parsing Function ---
     fun parseNodeInfoString(nodeData: String): List<Node> {
         val nodes = mutableListOf<Node>()
         val lines = nodeData.split('\n').filter { it.isNotBlank() }
+        Log.d("NodeParser", "Parsing ${lines.size} live node lines from BLE.")
         for (line in lines) {
             if (line.contains("No nodes currently tracked.")) { break }
             val nodeMap = mutableMapOf<String, String>()
             val pairs = line.split(';'); for (pair in pairs) { val parts = pair.split(':', limit = 2); if (parts.size == 2) nodeMap[parts[0].trim()] = parts[1].trim() }
-            val nodeIdStr = nodeMap["NodeID"]; val status = nodeMap["Status"] ?: "Unknown"; val lastSeen = nodeMap["LastSeen"] ?: "N/A"; val devId = nodeMap["DevID"]; val batteryStr = nodeMap["Battery"]
-            if (nodeIdStr != null) {
+
+            val nodeIdStr = nodeMap["NodeID"]
+            val statusStr = nodeMap["Status"] ?: "Unknown"
+            val lastSeenStr = nodeMap["LastSeen"] ?: "N/A"
+            val devId = nodeMap["DevID"] // Hardware ID - SHOULD exist
+            val batteryStr = nodeMap["Battery"]
+
+            if (nodeIdStr != null && devId != null) { // Require NodeID and DevID
                 try {
-                    val nodeId = nodeIdStr; val batteryLevel = batteryStr?.filter { it.isDigit() }?.toIntOrNull()
-                    val node = Node(id = devId ?: nodeId, name = "Node $nodeId" + (devId?.let { " ($it)" } ?: ""), status = status, lastSeen = lastSeen, batteryLevel = batteryLevel, signalStrength = null)
+                    val loraNodeId = nodeIdStr
+                    val batteryLevel = batteryStr?.filter { it.isDigit() }?.toIntOrNull()
+
+                    // Create Node object with ONLY live data + IDs
+                    val node = Node(
+                        id = devId, // Use DevID as the key for the list item
+                        nodeId = loraNodeId,
+                        deviceId = devId,
+                        name = "Node $loraNodeId ($devId)", // Generate name, user can change later
+                        status = statusStr,
+                        lastSeen = lastSeenStr,
+                        batteryLevel = batteryLevel,
+                        isExpanded = false // Default UI state
+                        // No settings fields populated here
+                    )
                     nodes.add(node)
-                } catch (e: Exception) { Log.e("NodeParser", "Error parsing line: '$line'", e) }
-            } else { Log.w("NodeParser", "Skipping line due to missing NodeID: '$line'") }
+                } catch (e: Exception) { Log.e("NodeParser", "Error parsing live node line: '$line'", e) }
+            } else { Log.w("NodeParser", "Skipping live node line due to missing NodeID or DevID: '$line'") }
         }
-        return nodes
+        Log.d("NodeParser", "Parsed live node list size: ${nodes.size}")
+        return nodes.sortedBy { it.name } // Return sorted list
     }
 
     // Inside BleManager.kt
@@ -720,77 +748,174 @@ class BleManager private constructor(private val applicationContext: Context) {
     private val dbHelper: DatabaseHelper by lazy { DatabaseHelper(applicationContext) }
 
     // --- UPDATED Function to parse, SAVE, and notify detection alerts ---
+    /*@RequiresApi(Build.VERSION_CODES.O)
     private fun processAndSaveDetectionAlert(alertDataString: String) {
         Log.d("BleManager", "Processing and saving detection alert: $alertDataString")
-        // Expected format: Node:ID;EventUUID:ID;Mask:MASK;Conf:CONF;Time:TIME;BBox:X,Y,W,H
+        // Expected format: Node:ID;EventUUID:ID;DevID:HEXID;Mask:MASK;Conf:CONF;Time:TIME;BBox:X,Y,W,H
         val parts = alertDataString.split(';')
         val dataMap = mutableMapOf<String, String>()
         parts.forEach { part ->
             val keyValue = part.split(':', limit = 2)
+            // Trim keys and values during parsing
             if (keyValue.size == 2) dataMap[keyValue[0].trim()] = keyValue[1].trim()
         }
 
+        // Extract all potential fields
         val nodeId = dataMap["Node"]
-        val eventUUID = dataMap["EventUUID"] // Use this as the unique ID for the event
+        val eventUUID = dataMap["EventUUID"]
+        val devIdStr = dataMap["DevID"] // <<< Extract Device ID String
         val maskStr = dataMap["Mask"]
         val confStr = dataMap["Conf"]
-        val timeStr = dataMap["Time"] // Raw timestamp string from ESP32 (e.g., seconds or millis)
-        val bboxStr = dataMap["BBox"] // Optional: Parse if needed
 
-        // *** Ensure essential fields are present ***
-        if (nodeId != null && eventUUID != null && maskStr != null && confStr != null && timeStr != null) {
+        val time = Calendar.getInstance().time
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm")
+        val current = formatter.format(time)
+        val timeStr = current
+        val bboxStr = dataMap["BBox"]
+
+
+        if (nodeId != null && eventUUID != null && devIdStr != null && maskStr != null && confStr != null && timeStr != null) {
             try {
                 val mask = maskStr.toIntOrNull() ?: 0
                 val confidence = confStr.toIntOrNull() ?: 0
-                val cameraName = "Node $nodeId" // Construct camera name
+                val cameraName = "Node $nodeId"
+                val animalString = parseAnimalMask(mask) // Use helper
 
-                // Convert mask to primary animal name(s) for DB/notification
-                val animals = mutableListOf<String>()
-                // Use constants if defined, otherwise use magic numbers carefully
-                if (mask and 0x01 != 0) animals.add("Squirrel") // ANIMAL_MASK_SQUIRREL
-                if (mask and 0x02 != 0) animals.add("Bird")     // ANIMAL_MASK_BIRD
-                if (mask and 0x04 != 0) animals.add("Cat")      // ANIMAL_MASK_CAT
-                if (mask and 0x08 != 0) animals.add("Dog")      // ANIMAL_MASK_DOG
-                // Add other masks as needed...
-                val animalString = if (animals.isEmpty()) "Unknown" else animals.joinToString(", ")
+                // Log the received Device ID
+                Log.d("BleManager", "Parsed Device ID: $devIdStr")
 
-                // --- *** SAVE TO DATABASE *** ---
-                // Call the insert function from DatabaseHelper shown in the Canvas
+                // --- Save to Database using UUID ---
+                // The current DB schema uses eventUUID as PK.
+                // We don't store the DevID separately in the DB in this schema,
+                // but we have it available if needed for logging or other logic.
+                // --- Parse Bounding Box ---
+                var bboxX: Int? = null; var bboxY: Int? = null
+                var bboxW: Int? = null; var bboxH: Int? = null
+                if (bboxStr != null) {
+                    val bboxParts = bboxStr.split(',')
+                    if (bboxParts.size == 4) {
+                        bboxX = bboxParts[0].toIntOrNull()
+                        bboxY = bboxParts[1].toIntOrNull()
+                        bboxW = bboxParts[2].toIntOrNull()
+                        bboxH = bboxParts[3].toIntOrNull()
+                    } else { }
+                }
+                // --- End Parse Bounding Box ---
+
+                // --- Save to Database including BBox ---
                 val dbSuccess = dbHelper.insertDetectionRecord(
-                    eventUUID = eventUUID,      // Pass UUID as the key
-                    animal = animalString,      // Store the derived animal name(s)
-                    timestamp = timeStr,        // Store raw timestamp string from ESP32
+                    eventUUID = eventUUID,
+                    animal = animalString,
+                    timestamp = timeStr,
                     camera = cameraName,
-                    imagePath = null            // Image path is null for an alert
+                    imagePath = null, // No image path yet
+
+                    bboxX = bboxX,
+                    bboxY = bboxY,
+                    bboxW = bboxW,
+                    bboxH = bboxH,
+                    devIdStr
                 )
 
-                if (!dbSuccess) {
-                    Log.e("BleManager", "Failed to insert detection alert (UUID: $eventUUID) into database!")
-                    // Consider how to handle DB insertion failure
-                    _databaseUpdatedSignal.value = AtomicLong(System.currentTimeMillis())
-
-                } else {
-                    Log.d("BleManager", "Detection alert (UUID: $eventUUID) saved to database.")
-                }
-                // --- *** END SAVE TO DATABASE *** ---
-
+                if (dbSuccess) {  }
+                else {  }
 
                 // --- Trigger System Notification ---
                 val title = "Animal Detected!"
-                val message = "$animalString detected by $cameraName (Conf: $confidence%). Event ID: $eventUUID"
-                Log.i("BleManager", "Triggering Notification: $message")
+                // Include DevID in the notification message for clarity
+                val message = "$animalString by $cameraName (Dev: $devIdStr, Conf: $confidence%). Event: $eventUUID"
                 NotificationHelper.sendNotification(applicationContext, title, message)
-                // --- End Trigger Notification ---
 
-
-            } catch (e: Exception) {
-                Log.e("BleManager", "Error processing/saving detection alert data: $alertDataString", e)
-            }
+            } catch (e: Exception) {  }
         } else {
-            Log.e("BleManager", "Failed to parse detection alert string (Missing fields?). Format incorrect.")
+            // Log which fields were missing
+            Log.e("BleManager", "Failed to parse detection alert string (Missing fields?).")
+            Log.e("BleManager", "Node: $nodeId, EventUUID: $eventUUID, DevID: $devIdStr, Mask: $maskStr, Conf: $confStr, Time: $timeStr")
             Log.e("BleManager", "Received Map: $dataMap")
         }
+    }***/
+
+    // --- UPDATED Function to check settings and trigger notification ---
+    private fun processAndSaveDetectionAlert(alertDataString: String) {
+        Log.d("BleManager", "Processing detection alert: $alertDataString")
+        val parts = alertDataString.split(';')
+        val dataMap = mutableMapOf<String, String>()
+        parts.forEach { part -> val kv = part.split(':', limit = 2); if (kv.size == 2) dataMap[kv[0].trim()] = kv[1].trim() }
+
+        val nodeId = dataMap["Node"]
+        val eventUUID = dataMap["EventUUID"]
+        val devIdStr = dataMap["DevID"] // <<< Hardware ID
+        val maskStr = dataMap["Mask"]
+        val confStr = dataMap["Conf"]
+        val timeStr = dataMap["Time"]
+        val bboxStr = dataMap["BBox"]
+
+        if (nodeId != null && eventUUID != null && devIdStr != null && maskStr != null && confStr != null && timeStr != null) {
+            try {
+                val receivedMask = maskStr.toIntOrNull() ?: 0
+                val confidence = confStr.toIntOrNull() ?: 0
+                val cameraName = "Node $nodeId"
+                val animalString = parseAnimalMask(receivedMask)
+                var bboxX: Int? = null; var bboxY: Int? = null; var bboxW: Int? = null; var bboxH: Int? = null
+                if (bboxStr != null) { /* ... parse bbox parts ... */ }
+
+                // --- Save detection to DB (includes DevID) ---
+                val dbSuccess = dbHelper.insertDetectionRecord(
+                    eventUUID = eventUUID, animal = animalString, timestamp = timeStr,
+                    camera = cameraName, imagePath = null,
+                    bboxX = bboxX, bboxY = bboxY, bboxW = bboxW, bboxH = bboxH,
+                    deviceId = devIdStr // Save the device ID with the detection
+                )
+                if (dbSuccess) { _databaseUpdatedSignal.value = AtomicLong(System.currentTimeMillis()) } // Signal DB change
+                else { Log.e("BleManager", "Failed to insert detection alert (UUID: $eventUUID) into database!") }
+
+                // --- Check User Settings & Trigger Notification ---
+                // Fetch saved settings for THIS device ID from the DB
+                val (savedAlertMask, _) = dbHelper.getNodeSettings(devIdStr) // Ignore threshold for now
+                val userAlertMask = savedAlertMask ?: 0 // Default to 0 (no alerts) if no setting saved
+
+                Log.d("BleManager", "Checking notification: DevID=$devIdStr, ReceivedMask=$receivedMask, UserAlertMask=$userAlertMask")
+
+                // Perform bitwise AND. If result is non-zero, there's an overlap.
+                if ((receivedMask and userAlertMask) != 0) {
+                    // User wants alerts for at least one of the detected animals
+                    val title = "Animal Detected!"
+                    val message = "$animalString detected by $cameraName (Dev: $devIdStr, Conf: $confidence%). Event: $eventUUID"
+                    Log.i("BleManager", "MATCH: User settings match detected animal. Triggering Notification: $message")
+                    NotificationHelper.sendNotification(applicationContext, title, message)
+                } else {
+                    Log.i("BleManager", "No match between detected animal and user alert settings for $devIdStr. Notification suppressed.")
+                }
+                // --- End Notification Check ---
+
+            } catch (e: Exception) { Log.e("BleManager", "Error processing/saving detection alert data: $alertDataString", e) }
+        } else { Log.e("BleManager", "Failed to parse detection alert string (Missing fields?). Map: $dataMap") }
     }
+
+    suspend fun saveNodeSettings(deviceId: String, alertMask: Int?, threshold: Int?) : Boolean {
+        if (deviceId.isBlank()) return false
+        Log.d("BleManager", "Saving settings for DevID $deviceId: Mask=$alertMask, Threshold=$threshold")
+        return withContext(Dispatchers.IO) {
+            dbHelper.insertOrUpdateNodeSettings(deviceId, alertMask, threshold)
+        }
+        // Note: We might need to re-fetch settings in the Fragment after saving
+        // if the Node objects held by the adapter need immediate update,
+        // or rely on the next sync/reload.
+    }
+
+
+
+    // Helper to parse animal mask
+    private fun parseAnimalMask(mask: Int): String {
+        // ... (Implementation as before) ...
+        val animals = mutableListOf<String>()
+        if (mask and 0x01 != 0) animals.add("Squirrel")
+        if (mask and 0x02 != 0) animals.add("Bird")
+        if (mask and 0x04 != 0) animals.add("Cat")
+        if (mask and 0x08 != 0) animals.add("Dog")
+        return if (animals.isEmpty()) "Unknown" else animals.joinToString(", ")
+    }
+
 
 
 

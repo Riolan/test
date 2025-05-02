@@ -55,10 +55,10 @@ class MainActivity : AppCompatActivity() {
                     loadFragment(nodesFragment)
                     true
                 }
-                R.id.navigation_settings -> {
-                    loadFragment(settingsFragment)
-                    true
-                }
+                //R.id.navigation_settings -> {
+                //    loadFragment(settingsFragment)
+                //    true
+                //}
                 R.id.navigation_dev_tools -> {
                     loadFragment(devToolsFragment)
                     true
