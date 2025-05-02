@@ -73,6 +73,10 @@ class LoginUserFragment : Fragment() {
 
         if (dbHelper.isValidUser(email, password)) {
             sharedPreferences.edit().putBoolean("isLoggedIn", true).apply()
+                //.putBoolean("isLoggedIn", true)
+//                .putString("email", email)
+//                .putString("password", dbHelper.getHashedPassword(email)) // Ensure this returns SHA-256 hash
+//                .apply()
             Toast.makeText(requireContext(), "Login Successful!", Toast.LENGTH_SHORT).show()
             // Tell AuthActivity to navigate to Main
             (activity as? AuthActivity)?.navigateToMain()

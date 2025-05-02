@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.example.myapplication.R
+import com.example.sampleviewer.database.DatabaseHelper
 
 class AuthActivity : AppCompatActivity() {
 
@@ -24,6 +25,15 @@ class AuthActivity : AppCompatActivity() {
             return // Finish AuthActivity, don't load login fragment
         }
 
+//        val email = sharedPreferences.getString("email", null)
+//        val passwordHash = sharedPreferences.getString("password", null)
+//        val dbHelper = DatabaseHelper(this)
+//
+//        if (email != null && passwordHash != null && dbHelper.isValidUserHashed(email, passwordHash)) {
+//            navigateToMain()
+//            return
+//        }
+
         // Set the content view for the AuthActivity
         setContentView(R.layout.activity_auth)
 
@@ -32,6 +42,7 @@ class AuthActivity : AppCompatActivity() {
             loadFragment(LoginUserFragment(), false) // Don't add initial fragment to back stack
         }
     }
+
 
     // Function to load fragments into the container
     fun loadFragment(fragment: Fragment, addToBackStack: Boolean = true) {
