@@ -9,14 +9,13 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
 import com.example.myapplication.R
 import com.example.sampleviewer.Event
-import com.example.sampleviewer.Node
 import java.security.MessageDigest
 
 class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
 
     companion object {
         private const val DATABASE_NAME = "users.db"
-        private const val DATABASE_VERSION = 8 //
+        private const val DATABASE_VERSION = 2 //
 
 
         // Existing user table constants
@@ -27,25 +26,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
         // Detections table constants (CHANGED)
         private const val TABLE_DETECTIONS = "detections"
+        // *** Use Event UUID as Primary Key ***
         private const val COLUMN_EVENT_UUID = "event_uuid" // TEXT PRIMARY KEY
         private const val COLUMN_DETECTED_ANIMAL = "detected_animal"
-        private const val COLUMN_TIMESTAMP = "timestamp"
+        private const val COLUMN_TIMESTAMP = "timestamp" // Store raw string from ESP32 (e.g., seconds or millis)
         private const val COLUMN_CAMERA = "camera" // e.g., "Node 1"
         private const val COLUMN_IMAGE_PATH = "image_path" // TEXT, Nullable
-        private const val COLUMN_BBOX_X = "bbox_x"         // INTEGER, Nullable
-        private const val COLUMN_BBOX_Y = "bbox_y"         // INTEGER, Nullable
-        private const val COLUMN_BBOX_W = "bbox_w"         // INTEGER, Nullable
-        private const val COLUMN_BBOX_H = "bbox_h"         // INTEGER, Nullable
-        // *** New Device ID Column ***
-        private const val COLUMN_DEVICE_ID = "device_id"
-
-
-        private const val TABLE_NODES = "nodes" // Renamed from node_settings
-        private const val COLUMN_NODE_DEVICE_ID = "device_id" // TEXT PRIMARY KEY
-        // Removed COLUMN_NODE_LORA_ID - transient info
-        private const val COLUMN_NODE_NAME = "name" // TEXT, Nullable (User-defined name)
-        private const val COLUMN_NODE_ALERT_MASK = "alert_mask" // INTEGER, Nullable
-        private const val COLUMN_NODE_DET_THRESHOLD = "detection_threshold" // INTEGER, Nullable
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -53,35 +39,19 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.execSQL(createUserTable)
 
         // *** Create detections table with UUID as TEXT PRIMARY KEY ***
-        // *** Create detections table with device_id column ***
         val createDetectionsTable = "CREATE TABLE $TABLE_DETECTIONS (" +
-                "$COLUMN_EVENT_UUID TEXT PRIMARY KEY, " +
+                "$COLUMN_EVENT_UUID TEXT PRIMARY KEY, " + // Changed
                 "$COLUMN_DETECTED_ANIMAL TEXT, " +
                 "$COLUMN_TIMESTAMP TEXT, " +
                 "$COLUMN_CAMERA TEXT, " +
-                "$COLUMN_IMAGE_PATH TEXT, " +
-                "$COLUMN_BBOX_X INTEGER, " +
-                "$COLUMN_BBOX_Y INTEGER, " +
-                "$COLUMN_BBOX_W INTEGER, " +
-                "$COLUMN_BBOX_H INTEGER, " +
-                "$COLUMN_DEVICE_ID TEXT)" // Added device_id column
+                "$COLUMN_IMAGE_PATH TEXT)" // Nullable
         db.execSQL(createDetectionsTable)
-        Log.i("DatabaseHelper", "Detections table created with device_id column.")
-
-
-        val createNodesTable = "CREATE TABLE $TABLE_NODES (" +
-                "$COLUMN_NODE_DEVICE_ID TEXT PRIMARY KEY, " +
-                "$COLUMN_NODE_NAME TEXT, " +
-                "$COLUMN_NODE_ALERT_MASK INTEGER DEFAULT 0, " + // Default mask to 0 (no alerts)
-                "$COLUMN_NODE_DET_THRESHOLD INTEGER)" // Default threshold null? Or a value?
-        db.execSQL(createNodesTable)
+        Log.i("DatabaseHelper", "Detections table created with UUID as PK.")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS $TABLE_USERS")
         db.execSQL("DROP TABLE IF EXISTS $TABLE_DETECTIONS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_NODES") // *** Make sure this line is present ***
-
         onCreate(db)
     }
 
@@ -117,33 +87,41 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return isValid
     }
 
+    fun isValidUserHashed(email: String, passwordHash: String): Boolean {
+        val db = readableDatabase
+        val query = "SELECT * FROM users WHERE email = ? AND password = ?"
+        val cursor = db.rawQuery(query, arrayOf(email, passwordHash))
+        val isValid = cursor.count > 0
+        cursor.close()
+        db.close()
+        return isValid
+    }
+
+    fun getHashedPassword(email: String): String? {
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT password FROM users WHERE email = ?", arrayOf(email))
+        val result = if (cursor.moveToFirst()) cursor.getString(0) else null
+        cursor.close()
+        db.close()
+        return result
+    }
+
     /**
      * Inserts a detection record using the Event UUID as the primary key.
      * Replaces existing record on conflict.
      */
-    fun insertDetectionRecord(
-        eventUUID: String,
-        animal: String,
-        timestamp: String,
-        camera: String, // This is the LoRa Node ID string ("Node X")
-        imagePath: String?,
-        bboxX: Int?, bboxY: Int?, bboxW: Int?, bboxH: Int?,
-        deviceId: String? // Add deviceId parameter (String, e.g., "0xABCDEF12")
-    ): Boolean {
-        if (eventUUID.isBlank()) { /* ... error log ... */ return false }
+    fun insertDetectionRecord(eventUUID: String, animal: String, timestamp: String, camera: String, imagePath: String?): Boolean {
+        if (eventUUID.isBlank()) {
+            Log.e("DatabaseHelper", "Attempted to insert detection record with blank UUID.")
+            return false
+        }
         val db = writableDatabase
         val values = ContentValues().apply {
-            put(COLUMN_EVENT_UUID, eventUUID)
+            put(COLUMN_EVENT_UUID, eventUUID) // Use UUID as key
             put(COLUMN_DETECTED_ANIMAL, animal)
             put(COLUMN_TIMESTAMP, timestamp)
             put(COLUMN_CAMERA, camera)
-            put(COLUMN_IMAGE_PATH, imagePath)
-            put(COLUMN_BBOX_X, bboxX)
-            put(COLUMN_BBOX_Y, bboxY)
-            put(COLUMN_BBOX_W, bboxW)
-            put(COLUMN_BBOX_H, bboxH)
-            // *** Put deviceId ***
-            put(COLUMN_DEVICE_ID, deviceId) // Handles null correctly
+            put(COLUMN_IMAGE_PATH, imagePath) // Can be null initially
         }
         var result = -1L
         try {
@@ -190,104 +168,17 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return rowsAffected
     }
 
-    /**
-     * Inserts or updates persistent information for a specific node based on its Device ID.
-     * Use this when receiving live data from the node via BLE sync.
-     */
-
-// Function to save/update ONLY settings for a device
-    fun insertOrUpdateNodeSettings(deviceId: String, alertMask: Int?, threshold: Int?): Boolean {
-        if (deviceId.isBlank()) return false
-        val db = writableDatabase
-        val values = ContentValues().apply {
-            put(COLUMN_NODE_DEVICE_ID, deviceId) // Needed for REPLACE
-            alertMask?.let { put(COLUMN_NODE_ALERT_MASK, it) }
-            threshold?.let { put(COLUMN_NODE_DET_THRESHOLD, it) }
-        }
-        if (values.size() <= 1) return true // Only deviceId present, nothing to update
-
-        var result = -1L
-        try {
-            // Use CONFLICT_REPLACE: Inserts if DevID is new, updates if it exists
-            result = db.insertWithOnConflict(TABLE_NODES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        } catch (e: Exception) { /* Log error */ }
-        // finally { db.close() }
-        return result != -1L
-    }
-
 
     /**
-     * Updates just the user-defined name for a node.
-     */
-    fun updateNodeName(deviceId: String, newName: String): Boolean {
-        if (deviceId.isBlank()) return false
-        val db = writableDatabase
-        val values = ContentValues().apply { put(COLUMN_NODE_NAME, newName) }
-        val selection = "$COLUMN_NODE_DEVICE_ID = ?"
-        val selectionArgs = arrayOf(deviceId)
-        var rowsAffected = 0
-        try { rowsAffected = db.update(TABLE_NODES, values, selection, selectionArgs) }
-        catch (e: Exception) { Log.e("DatabaseHelper", "Error updating name for $deviceId", e) }
-        // finally { db.close() }
-        return rowsAffected > 0
-    }
-
-    /**
-     * Updates just the settings (mask, threshold) for a node.
-     */
-    fun updateNodeSettings(deviceId: String, alertMask: Int?, threshold: Int?): Boolean {
-        if (deviceId.isBlank()) return false
-        val db = writableDatabase
-        val values = ContentValues() // Only add non-null values
-        alertMask?.let { values.put(COLUMN_NODE_ALERT_MASK, it) }
-        threshold?.let { values.put(COLUMN_NODE_DET_THRESHOLD, it) }
-
-        if (values.size() == 0) return true // Nothing to update
-
-        val selection = "$COLUMN_NODE_DEVICE_ID = ?"
-        val selectionArgs = arrayOf(deviceId)
-        var rowsAffected = 0
-        try { rowsAffected = db.update(TABLE_NODES, values, selection, selectionArgs) }
-        catch (e: Exception) { Log.e("DatabaseHelper", "Error updating settings for $deviceId", e) }
-        // finally { db.close() }
-        // Return true if update occurred OR if the record might not exist yet (insertOrUpdate handles creation)
-        return rowsAffected >= 0
-    }
-
-    // Function to retrieve settings
-    @SuppressLint("Range")
-    fun getNodeSettings(deviceId: String): Pair<Int?, Int?> {
-        if (deviceId.isBlank()) return Pair(null, null)
-        val db = readableDatabase
-        val query = "SELECT $COLUMN_NODE_ALERT_MASK, $COLUMN_NODE_DET_THRESHOLD FROM $TABLE_NODES WHERE $COLUMN_NODE_DEVICE_ID = ?"
-        val selectionArgs = arrayOf(deviceId)
-        var cursor: Cursor? = null
-        var alertMask: Int? = 0 // Default to 0 (no alerts) if not found
-        var threshold: Int? = null // Default to null if not found
-        try {
-            cursor = db.rawQuery(query, selectionArgs)
-            if (cursor != null && cursor.moveToFirst()) {
-                val maskIndex = cursor.getColumnIndex(COLUMN_NODE_ALERT_MASK)
-                if (maskIndex != -1 && !cursor.isNull(maskIndex)) {
-                    alertMask = cursor.getInt(maskIndex)
-                }
-                val thresholdIndex = cursor.getColumnIndex(COLUMN_NODE_DET_THRESHOLD)
-                if (thresholdIndex != -1 && !cursor.isNull(thresholdIndex)) {
-                    threshold = cursor.getInt(thresholdIndex)
-                }
-            }
-        } catch (e: Exception) { /* Log error */ }
-        finally { cursor?.close() }
-        return Pair(alertMask, threshold)
-    }
-
-    /**
-     * Retrieves all detection events, including bounding box and device ID info, ordered by timestamp descending.
+     * Retrieves all detection events, ordered by timestamp descending.
      */
     @SuppressLint("Range")
     fun getAllDetectionEvents(): List<Event> {
         val eventList = mutableListOf<Event>()
         val db = readableDatabase
+        // Order by timestamp - assuming it's stored as milliseconds or seconds string
+        // If stored as seconds, ensure sufficient zero-padding for correct string sort,
+        // or cast to INTEGER in query for numeric sort. Millis string usually sorts ok.
         val query = "SELECT * FROM $TABLE_DETECTIONS ORDER BY $COLUMN_TIMESTAMP DESC"
         var cursor: Cursor? = null
 
@@ -296,38 +187,35 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             cursor = db.rawQuery(query, null)
             if (cursor != null && cursor.moveToFirst()) {
                 do {
+                    // *** Read UUID as the primary ID ***
                     val eventUUID = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EVENT_UUID))
                     val animal = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DETECTED_ANIMAL)) ?: "Unknown"
                     val timestampStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIMESTAMP)) ?: "0"
                     val camera = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CAMERA)) ?: "Unknown Cam"
-                    val imagePathFromDb = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_IMAGE_PATH))
-                    val bboxX = if (cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_BBOX_X))) null else cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_BBOX_X))
-                    val bboxY = if (cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_BBOX_Y))) null else cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_BBOX_Y))
-                    val bboxW = if (cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_BBOX_W))) null else cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_BBOX_W))
-                    val bboxH = if (cursor.isNull(cursor.getColumnIndexOrThrow(COLUMN_BBOX_H))) null else cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_BBOX_H))
-                    // *** Get Device ID ***
-                    val deviceIdFromDb = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DEVICE_ID)) // Can be null
+                    val imagePathFromDb = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_IMAGE_PATH)) // Can be null
 
                     val description = "$animal by $camera"
-                    val formattedTimestamp = formatDisplayTimestamp(timestampStr)
+                    val formattedTimestamp = formatDisplayTimestamp(timestampStr) // Format for display
 
                     val event = Event(
-                        id = eventUUID,
-                        nodeId = camera, // Keep using camera name ("Node X") as nodeId for now
+                        id = eventUUID, // Use the UUID from the DB as the Event ID
                         description = description,
                         timestamp = formattedTimestamp,
-                        imagePath = imagePathFromDb,
-                        fallbackIconResId = R.drawable.baseline_camera_outdoor_24,
-                        bboxX = bboxX, bboxY = bboxY, bboxW = bboxW, bboxH = bboxH,
-                        // *** Add deviceId field to Event data class ***
-                        deviceId = deviceIdFromDb // Pass the retrieved device ID
+                        imagePath = imagePathFromDb, // Populate from DB
+                        fallbackIconResId = R.drawable.baseline_camera_outdoor_24 // Your placeholder
                     )
                     eventList.add(event)
                 } while (cursor.moveToNext())
                 Log.d("DatabaseHelper", "Found ${eventList.size} detection records.")
-            } else { Log.d("DatabaseHelper", "No detection records found.") }
-        } catch (e: Exception) { Log.e("DatabaseHelper", "Error while getting detections", e)
-        } finally { cursor?.close() }
+            } else {
+                Log.d("DatabaseHelper", "No detection records found.")
+            }
+        } catch (e: Exception) {
+            Log.e("DatabaseHelper", "Error while getting detections", e)
+        } finally {
+            cursor?.close()
+            // db.close() // Don't close helper instance
+        }
         return eventList
     }
 
